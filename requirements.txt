@@ -35,3 +35,7 @@ fake-useragent>=1.4.0       # 随机 User-Agent 防封禁
 
 # 数据库
 # SQLite 是 Python 内置，无需额外安装
+
+# Web 服务（可选，用于提供 HTTP API）
+fastapi>=0.109.0            # 现代 Web 框架
+uvicorn[standard]>=0.27.0   # ASGI 服务器

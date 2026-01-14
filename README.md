@@ -136,11 +136,73 @@ python main.py --schedule         # 定时任务模式
 cp .env.example .env
 vim .env
 
-# 一键启动
+# 一键启动（定时任务模式）
 docker-compose up -d
 
 # 查看日志
 docker-compose logs -f
+```
+
+### 方式四：Web 服务模式
+
+提供 HTTP API 接口，支持按需触发单只股票分析。
+
+#### 本地启动
+
+```bash
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动 Web 服务
+uvicorn web_app:app --host 0.0.0.0 --port 8000
+
+# 或使用 reload 模式（开发用）
+uvicorn web_app:app --reload
+```
+
+#### Docker 启动
+
+```bash
+# 使用 profile 启动 Web 服务
+docker-compose --profile web up -d stock-analyzer-web
+```
+
+#### API 接口
+
+| 接口 | 方法 | 说明 |
+|-----|------|-----|
+| `/health` | GET | 健康检查 |
+| `/analysis?code=xxx` | GET | 触发单只股票异步分析 |
+| `/docs` | GET | Swagger 文档 |
+
+#### 调用示例
+
+```bash
+# 健康检查
+curl http://localhost:8000/health
+
+# 触发分析（带鉴权）
+curl -H "X-API-Token: your-secret-token" \
+     "http://localhost:8000/analysis?code=600519"
+
+# 响应示例
+{
+  "status": "accepted",
+  "code": "600519",
+  "message": "分析任务已提交，将在完成后通过原有渠道发送通知"
+}
+```
+
+#### 配置说明
+
+在 `.env` 中添加：
+
+```bash
+# Web 服务鉴权（建议配置，防止接口被滥用）
+API_TOKEN=your-secret-token
+
+# Web 服务端口（可选，默认 8000）
+WEB_PORT=8000
 ```
 
 ## 📱 推送效果
@@ -223,7 +285,8 @@ schedule:
 
 ```
 daily_stock_analysis/
-├── main.py              # 主程序入口
+├── main.py              # 主程序入口（CLI/定时任务）
+├── web_app.py           # Web 服务入口（FastAPI）
 ├── analyzer.py          # AI 分析器（Gemini）
 ├── market_analyzer.py   # 大盘复盘分析
 ├── search_service.py    # 新闻搜索服务
@@ -279,6 +342,7 @@ daily_stock_analysis/
 - [x] 大盘复盘
 - [x] 定时推送
 - [x] GitHub Actions
+- [x] Web API 服务（单股分析触发接口）
 - [ ] Web 管理界面
 - [ ] 自选股动态管理 API
 - [ ] 历史分析回测

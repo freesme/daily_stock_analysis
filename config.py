@@ -94,6 +94,10 @@ class Config:
     max_workers: int = 3  # 低并发防封禁
     debug: bool = False
     
+    # === Web 服务配置 ===
+    api_token: Optional[str] = None  # Web 接口鉴权用 Token（X-API-Token）
+    web_port: int = 8000             # Web 服务端口
+    
     # === 定时任务配置 ===
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
@@ -197,6 +201,10 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            
+            # Web 服务配置
+            api_token=os.getenv('API_TOKEN'),
+            web_port=int(os.getenv('WEB_PORT', '8000')),
         )
     
     @classmethod

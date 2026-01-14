@@ -6,6 +6,7 @@
 version: '3.8'
 
 services:
+  # ========== 定时任务模式（默认）==========
   stock-analyzer:
     build:
       context: .
@@ -31,6 +32,55 @@ services:
       # 代理设置（如果需要）
       # - http_proxy=http://host.docker.internal:10809
       # - https_proxy=http://host.docker.internal:10809
+    
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # ========== Web 服务模式（按需启用）==========
+  # 使用方式: docker-compose --profile web up -d stock-analyzer-web
+  stock-analyzer-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stock-analyzer-web
+    restart: unless-stopped
+    profiles:
+      - web  # 需要显式指定 --profile web 才会启动
+    
+    # 环境变量（从 .env 文件加载）
+    env_file:
+      - .env
+    
+    # 挂载卷（持久化数据）
+    volumes:
+      - ./data:/app/data          # 数据库
+      - ./logs:/app/logs          # 日志文件
+      - ./reports:/app/reports    # 分析报告
+    
+    # 端口映射（Web 服务）
+    ports:
+      - "8000:8000"
+    
+    environment:
+      - TZ=Asia/Shanghai
+      - WEB_PORT=8000
+      # API Token 鉴权（建议配置）
+      # - API_TOKEN=your-secret-token
+    
+    # 覆盖默认命令，启动 Web 服务
+    command: ["uvicorn", "web_app:app", "--host", "0.0.0.0", "--port", "8000"]
     
     # 日志配置
     logging:

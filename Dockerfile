@@ -34,13 +34,19 @@ RUN mkdir -p /app/data /app/logs /app/reports
 ENV PYTHONUNBUFFERED=1
 ENV LOG_DIR=/app/logs
 ENV DATABASE_PATH=/app/data/stock_analysis.db
+ENV WEB_PORT=8000
 
 # 数据卷（持久化数据）
 VOLUME ["/app/data", "/app/logs", "/app/reports"]
+
+# 暴露 Web 服务端口（仅在 Web 模式下使用）
+EXPOSE 8000
 
 # 健康检查
 HEALTHCHECK --interval=5m --timeout=10s --start-period=30s --retries=3 \
     CMD python -c "import sys; sys.exit(0)"
 
 # 默认命令（可被覆盖）
+# 定时任务模式: python main.py --schedule（默认）
+# Web 服务模式: uvicorn web_app:app --host 0.0.0.0 --port 8000
 CMD ["python", "main.py", "--schedule"]

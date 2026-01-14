@@ -79,8 +79,11 @@ def setup_logging(debug: bool = False, log_dir: str = "./logs") -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)  # 根 logger 设为 DEBUG，由 handler 控制输出级别
     
-    # Handler 1: 控制台输出
-    console_handler = logging.StreamHandler(sys.stdout)
+    # Handler 1: 控制台输出（使用 UTF-8 编码，避免 Windows GBK 编码问题）
+    import io
+    # 包装 stdout 强制使用 UTF-8，遇到无法编码的字符则替换
+    utf8_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    console_handler = logging.StreamHandler(utf8_stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(logging.Formatter(LOG_FORMAT, LOG_DATE_FORMAT))
     root_logger.addHandler(console_handler)
@@ -704,6 +707,60 @@ def run_market_review(notifier: NotificationService, analyzer=None, search_servi
         logger.error(f"大盘复盘分析失败: {e}")
     
     return None
+
+
+# ========== Web 服务调用入口 ==========
+
+def run_single_stock_analysis(code: str, config: Config) -> None:
+    """
+    单只股票分析入口（供 Web 服务调用）
+    
+    步骤：
+    1. 初始化 StockAnalysisPipeline（单线程）
+    2. 获取并保存数据 + AI 分析
+    3. 发送通知（沿用现有 NotificationService 逻辑）
+    
+    Args:
+        code: 股票代码
+        config: 配置对象
+    """
+    logger.info("=" * 60)
+    logger.info(f"开始单股分析（来自 Web/外部调用）: {code}")
+    logger.info("=" * 60)
+
+    # 单股分析不需要高并发，避免对数据源造成压力
+    pipeline = StockAnalysisPipeline(
+        config=config,
+        max_workers=1,
+    )
+
+    # 直接复用已有的单股处理逻辑
+    result = pipeline.process_single_stock(code, skip_analysis=False)
+
+    if result:
+        logger.info(f"[{code}] 单股分析完成，将发送通知")
+        # 复用已有通知生成逻辑，只是这里传入单个结果
+        pipeline._send_notifications([result])
+    else:
+        logger.warning(f"[{code}] 单股分析失败或无结果，不发送通知")
+
+
+def trigger_single_stock_flow(code: str) -> None:
+    """
+    Web 服务触发的单股分析总入口
+    
+    - 内部自行获取 Config 等依赖
+    - 供 FastAPI 后台任务调用
+    
+    Args:
+        code: 股票代码
+    """
+    try:
+        config = get_config()
+        # 确保日志已初始化（Web 启动时会初始化，这里做保护）
+        run_single_stock_analysis(code, config)
+    except Exception as e:
+        logger.exception(f"[{code}] trigger_single_stock_flow 执行失败: {e}")
 
 
 def run_full_analysis(
