@@ -1844,7 +1844,8 @@ class NotificationService:
     def save_report_to_file(
         self, 
         content: str, 
-        filename: Optional[str] = None
+        filename: Optional[str] = None,
+        stock_codes: Optional[List[str]] = None
     ) -> str:
         """
         保存日报到本地文件
@@ -1852,6 +1853,7 @@ class NotificationService:
         Args:
             content: 日报内容
             filename: 文件名（可选，默认按日期生成）
+            stock_codes: 分析的股票代码列表（可选）
             
         Returns:
             保存的文件路径
@@ -1859,8 +1861,15 @@ class NotificationService:
         from pathlib import Path
         
         if filename is None:
-            date_str = datetime.now().strftime('%Y%m%d')
-            filename = f"report_{date_str}.md"
+            date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            if stock_codes:
+                # 将股票代码添加到文件名中
+                codes_str = "_".join(stock_codes[:5])  # 最多取5个代码，避免文件名过长
+                if len(stock_codes) > 5:
+                    codes_str += f"_等{len(stock_codes)}只"
+                filename = f"report_{date_str}_{codes_str}.md"
+            else:
+                filename = f"report_{date_str}.md"
         
         # 确保 reports 目录存在
         reports_dir = Path(__file__).parent / 'reports'
@@ -1939,8 +1948,11 @@ def send_daily_report(results: List[AnalysisResult]) -> bool:
     # 生成报告
     report = service.generate_daily_report(results)
     
+    # 提取股票代码列表
+    stock_codes = [r.code for r in results]
+    
     # 保存到本地
-    service.save_report_to_file(report)
+    service.save_report_to_file(report, stock_codes=stock_codes)
     
     # 推送到配置的渠道（自动识别）
     return service.send(report)
@@ -1999,7 +2011,8 @@ if __name__ == "__main__":
     
     # 保存到文件
     print("\n=== 保存日报 ===")
-    filepath = service.save_report_to_file(report)
+    stock_codes = [r.code for r in test_results]
+    filepath = service.save_report_to_file(report, stock_codes=stock_codes)
     print(f"保存成功: {filepath}")
     
     # 推送测试
