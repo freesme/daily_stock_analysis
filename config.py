@@ -103,6 +103,11 @@ class Config:
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
     
+    # === 报告模式配置 ===
+    # full: 完整版（详细决策仪表盘）
+    # compact: 精简版（适合企业微信等有字符限制的渠道）
+    report_mode: str = "full"
+    
     # === 流控配置（防封禁关键参数）===
     # Akshare 请求间隔范围（秒）
     akshare_sleep_min: float = 2.0
@@ -201,6 +206,9 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            
+            # 报告模式配置（full: 完整版, compact: 精简版）
+            report_mode=os.getenv('REPORT_MODE', 'full'),
             
             # Web 服务配置
             api_token=os.getenv('API_TOKEN'),

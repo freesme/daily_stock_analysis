@@ -137,7 +137,8 @@ class StockAnalysisPipeline:
     def __init__(
         self,
         config: Optional[Config] = None,
-        max_workers: Optional[int] = None
+        max_workers: Optional[int] = None,
+        report_mode: Optional[str] = None
     ):
         """
         初始化调度器
@@ -145,9 +146,11 @@ class StockAnalysisPipeline:
         Args:
             config: 配置对象（可选，默认使用全局配置）
             max_workers: 最大并发线程数（可选，默认从配置读取）
+            report_mode: 报告模式（可选，full=完整版, compact=精简版，默认从配置读取）
         """
         self.config = config or get_config()
         self.max_workers = max_workers or self.config.max_workers
+        self.report_mode = report_mode or self.config.report_mode
         
         # 初始化各模块
         self.db = get_db()
@@ -563,28 +566,37 @@ class StockAnalysisPipeline:
         """
         发送分析结果通知
         
-        生成决策仪表盘格式的报告
+        根据 report_mode 生成对应格式的报告：
+        - full: 完整版决策仪表盘
+        - compact: 精简版决策仪表盘（适合有字符限制的渠道）
         
         Args:
             results: 分析结果列表
         """
         try:
-            logger.info("生成决策仪表盘日报...")
+            logger.info(f"生成决策仪表盘日报（模式: {self.report_mode}）...")
             
-            # 生成决策仪表盘格式的详细日报
-            report = self.notifier.generate_dashboard_report(results)
+            # 提取股票代码列表
+            stock_codes = [r.code for r in results]
             
-            # 保存到本地
-            filepath = self.notifier.save_report_to_file(report)
+            # 根据报告模式生成对应的报告内容
+            if self.report_mode == "compact":
+                # 精简版（适合企业微信等有字符限制的渠道）
+                dashboard_content = self.notifier.generate_wechat_dashboard(results)
+                logger.info(f"精简版决策仪表盘长度: {len(dashboard_content)} 字符")
+            else:
+                # 完整版（默认）
+                dashboard_content = self.notifier.generate_dashboard_report(results)
+                logger.info(f"完整版决策仪表盘长度: {len(dashboard_content)} 字符")
+            
+            logger.debug(f"推送内容:\n{dashboard_content}")
+            
+            # 保存到本地（与发送内容一致）
+            filepath = self.notifier.save_report_to_file(dashboard_content, stock_codes=stock_codes)
             logger.info(f"决策仪表盘日报已保存: {filepath}")
             
             # 推送通知
             if self.notifier.is_available():
-                # 生成精简版决策仪表盘用于推送
-                dashboard_content = self.notifier.generate_wechat_dashboard(results)
-                logger.info(f"决策仪表盘长度: {len(dashboard_content)} 字符")
-                logger.debug(f"推送内容:\n{dashboard_content}")
-                
                 success = self.notifier.send(dashboard_content)
                 if success:
                     logger.info("决策仪表盘推送成功")
@@ -711,7 +723,7 @@ def run_market_review(notifier: NotificationService, analyzer=None, search_servi
 
 # ========== Web 服务调用入口 ==========
 
-def run_single_stock_analysis(code: str, config: Config) -> None:
+def run_single_stock_analysis(code: str, config: Config, report_mode: Optional[str] = None) -> None:
     """
     单只股票分析入口（供 Web 服务调用）
     
@@ -723,15 +735,17 @@ def run_single_stock_analysis(code: str, config: Config) -> None:
     Args:
         code: 股票代码
         config: 配置对象
+        report_mode: 报告模式（full=完整版, compact=精简版）
     """
     logger.info("=" * 60)
-    logger.info(f"开始单股分析（来自 Web/外部调用）: {code}")
+    logger.info(f"开始单股分析（来自 Web/外部调用）: {code}, 报告模式: {report_mode or config.report_mode}")
     logger.info("=" * 60)
 
     # 单股分析不需要高并发，避免对数据源造成压力
     pipeline = StockAnalysisPipeline(
         config=config,
         max_workers=1,
+        report_mode=report_mode,
     )
 
     # 直接复用已有的单股处理逻辑
@@ -745,7 +759,7 @@ def run_single_stock_analysis(code: str, config: Config) -> None:
         logger.warning(f"[{code}] 单股分析失败或无结果，不发送通知")
 
 
-def trigger_single_stock_flow(code: str) -> None:
+def trigger_single_stock_flow(code: str, report_mode: Optional[str] = None) -> None:
     """
     Web 服务触发的单股分析总入口
     
@@ -754,11 +768,12 @@ def trigger_single_stock_flow(code: str) -> None:
     
     Args:
         code: 股票代码
+        report_mode: 报告模式（full=完整版, compact=精简版）
     """
     try:
         config = get_config()
         # 确保日志已初始化（Web 启动时会初始化，这里做保护）
-        run_single_stock_analysis(code, config)
+        run_single_stock_analysis(code, config, report_mode)
     except Exception as e:
         logger.exception(f"[{code}] trigger_single_stock_flow 执行失败: {e}")
 
