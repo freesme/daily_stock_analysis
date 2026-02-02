@@ -1,0 +1,75 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "search": "Search",
+    "refresh": "Refresh",
+    "noData": "No data"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "analysis": "Analysis",
+    "history": "History",
+    "tasks": "Tasks",
+    "settings": "Settings"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "quickAnalysis": "Quick Analysis",
+    "recentTasks": "Recent Tasks",
+    "systemStatus": "System Status",
+    "enterStockCode": "Enter a stock code to start analysis"
+  },
+  "analysis": {
+    "title": "Stock Analysis",
+    "newAnalysis": "New Analysis",
+    "stockCode": "Stock Code",
+    "reportType": "Report Type",
+    "simple": "Simple",
+    "full": "Full",
+    "analyze": "Analyze",
+    "analyzing": "Analyzing...",
+    "result": "Analysis Result"
+  },
+  "history": {
+    "title": "Analysis History",
+    "noHistory": "No analysis history yet"
+  },
+  "tasks": {
+    "title": "Tasks",
+    "noTasks": "No tasks running",
+    "status": {
+      "pending": "Pending",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    }
+  },
+  "settings": {
+    "title": "Settings",
+    "theme": "Theme",
+    "language": "Language",
+    "darkMode": "Dark Mode",
+    "lightMode": "Light Mode"
+  },
+  "signal": {
+    "buy": "Buy",
+    "hold": "Hold",
+    "sell": "Sell",
+    "strongBuy": "Strong Buy",
+    "strongSell": "Strong Sell"
+  },
+  "error": {
+    "networkError": "Network error, please try again",
+    "serverError": "Server error",
+    "notFound": "Page not found",
+    "unauthorized": "Unauthorized access"
+  }
+}

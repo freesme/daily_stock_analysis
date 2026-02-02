@@ -1,0 +1,75 @@
+{
+  "common": {
+    "loading": "載入中...",
+    "error": "錯誤",
+    "success": "成功",
+    "cancel": "取消",
+    "confirm": "確認",
+    "save": "儲存",
+    "delete": "刪除",
+    "edit": "編輯",
+    "search": "搜尋",
+    "refresh": "重新整理",
+    "noData": "暫無資料"
+  },
+  "nav": {
+    "dashboard": "儀表板",
+    "analysis": "分析",
+    "history": "歷史記錄",
+    "tasks": "任務",
+    "settings": "設定"
+  },
+  "dashboard": {
+    "title": "儀表板",
+    "quickAnalysis": "快速分析",
+    "recentTasks": "最近任務",
+    "systemStatus": "系統狀態",
+    "enterStockCode": "輸入股票代碼開始分析"
+  },
+  "analysis": {
+    "title": "股票分析",
+    "newAnalysis": "新建分析",
+    "stockCode": "股票代碼",
+    "reportType": "報告類型",
+    "simple": "簡報",
+    "full": "完整報告",
+    "analyze": "分析",
+    "analyzing": "分析中...",
+    "result": "分析結果"
+  },
+  "history": {
+    "title": "分析歷史",
+    "noHistory": "暫無分析歷史"
+  },
+  "tasks": {
+    "title": "任務管理",
+    "noTasks": "暫無執行中的任務",
+    "status": {
+      "pending": "等待中",
+      "running": "執行中",
+      "completed": "已完成",
+      "failed": "失敗",
+      "cancelled": "已取消"
+    }
+  },
+  "settings": {
+    "title": "設定",
+    "theme": "主題",
+    "language": "語言",
+    "darkMode": "深色模式",
+    "lightMode": "淺色模式"
+  },
+  "signal": {
+    "buy": "買入",
+    "hold": "持有",
+    "sell": "賣出",
+    "strongBuy": "強烈買入",
+    "strongSell": "強烈賣出"
+  },
+  "error": {
+    "networkError": "網路錯誤，請重試",
+    "serverError": "伺服器錯誤",
+    "notFound": "頁面未找到",
+    "unauthorized": "未授權存取"
+  }
+}

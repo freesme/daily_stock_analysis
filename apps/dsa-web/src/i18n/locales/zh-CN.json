@@ -1,0 +1,75 @@
+{
+  "common": {
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功",
+    "cancel": "取消",
+    "confirm": "确认",
+    "save": "保存",
+    "delete": "删除",
+    "edit": "编辑",
+    "search": "搜索",
+    "refresh": "刷新",
+    "noData": "暂无数据"
+  },
+  "nav": {
+    "dashboard": "仪表盘",
+    "analysis": "分析",
+    "history": "历史记录",
+    "tasks": "任务",
+    "settings": "设置"
+  },
+  "dashboard": {
+    "title": "仪表盘",
+    "quickAnalysis": "快速分析",
+    "recentTasks": "最近任务",
+    "systemStatus": "系统状态",
+    "enterStockCode": "输入股票代码开始分析"
+  },
+  "analysis": {
+    "title": "股票分析",
+    "newAnalysis": "新建分析",
+    "stockCode": "股票代码",
+    "reportType": "报告类型",
+    "simple": "简报",
+    "full": "完整报告",
+    "analyze": "分析",
+    "analyzing": "分析中...",
+    "result": "分析结果"
+  },
+  "history": {
+    "title": "分析历史",
+    "noHistory": "暂无分析历史"
+  },
+  "tasks": {
+    "title": "任务管理",
+    "noTasks": "暂无运行中的任务",
+    "status": {
+      "pending": "等待中",
+      "running": "运行中",
+      "completed": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消"
+    }
+  },
+  "settings": {
+    "title": "设置",
+    "theme": "主题",
+    "language": "语言",
+    "darkMode": "深色模式",
+    "lightMode": "浅色模式"
+  },
+  "signal": {
+    "buy": "买入",
+    "hold": "持有",
+    "sell": "卖出",
+    "strongBuy": "强烈买入",
+    "strongSell": "强烈卖出"
+  },
+  "error": {
+    "networkError": "网络错误，请重试",
+    "serverError": "服务器错误",
+    "notFound": "页面未找到",
+    "unauthorized": "未授权访问"
+  }
+}
