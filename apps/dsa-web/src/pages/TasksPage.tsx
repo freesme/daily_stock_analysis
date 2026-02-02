@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import {
   Box,
@@ -20,12 +20,20 @@ import {
   Alert,
   Tooltip,
   Skeleton,
+  ToggleButton,
+  ToggleButtonGroup,
+  MenuItem,
+  Select,
+  FormControl,
+  InputLabel,
 } from '@mui/material';
+import type { SelectChangeEvent } from '@mui/material';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import ErrorRoundedIcon from '@mui/icons-material/ErrorRounded';
 import PlayCircleRoundedIcon from '@mui/icons-material/PlayCircleRounded';
+import FilterListRoundedIcon from '@mui/icons-material/FilterListRounded';
 
 import { useTasks } from '@/hooks/useApi';
 import type { Task, TaskStatus } from '@/types';
@@ -110,6 +118,8 @@ function SkeletonRow() {
 
 export default function TasksPage() {
   const navigate = useNavigate();
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest'>('newest');
   
   const { 
     data: tasksResponse, 
@@ -122,7 +132,7 @@ export default function TasksPage() {
 
   const tasksData: Task[] = tasksResponse?.data || [];
 
-  // Calculate summary counts
+  // Calculate summary counts (based on raw data)
   const summary = useMemo(() => {
     const counts = { running: 0, completed: 0, failed: 0 };
     tasksData.forEach(task => {
@@ -132,6 +142,46 @@ export default function TasksPage() {
     });
     return counts;
   }, [tasksData]);
+
+  // Filter and Sort
+  const filteredData = useMemo(() => {
+    let result = [...tasksData];
+
+    // Filter by status
+    if (statusFilter !== 'all') {
+      result = result.filter((item) => item.status === statusFilter);
+    }
+
+    // Sort
+    result.sort((a, b) => {
+      const timeA = new Date(a.start_time).getTime();
+      const timeB = new Date(b.start_time).getTime();
+      
+      switch (sortOrder) {
+        case 'newest':
+          return timeB - timeA;
+        case 'oldest':
+          return timeA - timeB;
+        default:
+          return 0;
+      }
+    });
+
+    return result;
+  }, [tasksData, statusFilter, sortOrder]);
+
+  const handleStatusFilterChange = (
+    _event: React.MouseEvent<HTMLElement>,
+    newFilter: string | null,
+  ) => {
+    if (newFilter !== null) {
+      setStatusFilter(newFilter);
+    }
+  };
+
+  const handleSortChange = (event: SelectChangeEvent) => {
+    setSortOrder(event.target.value as any);
+  };
 
   const handleViewTask = (task: Task) => {
     navigate(`/analysis/${task.task_id}`);
@@ -165,26 +215,72 @@ export default function TasksPage() {
       <Card variant="outlined">
         <CardContent>
           <Stack spacing={3}>
-            {/* Summary */}
+            {/* Summary Chips (Clickable as shortcuts) */}
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <Chip
                 icon={<PlayCircleRoundedIcon />}
                 label={isLoading ? 'Loading...' : `${summary.running} Running`}
                 color="primary"
-                variant="outlined"
+                variant={statusFilter === 'running' ? 'filled' : 'outlined'}
+                onClick={() => setStatusFilter(statusFilter === 'running' ? 'all' : 'running')}
               />
               <Chip
                 icon={<CheckCircleRoundedIcon />}
                 label={isLoading ? 'Loading...' : `${summary.completed} Completed`}
                 color="success"
-                variant="outlined"
+                variant={statusFilter === 'completed' ? 'filled' : 'outlined'}
+                onClick={() => setStatusFilter(statusFilter === 'completed' ? 'all' : 'completed')}
               />
               <Chip
                 icon={<ErrorRoundedIcon />}
                 label={isLoading ? 'Loading...' : `${summary.failed} Failed`}
                 color="error"
-                variant="outlined"
+                variant={statusFilter === 'failed' ? 'filled' : 'outlined'}
+                onClick={() => setStatusFilter(statusFilter === 'failed' ? 'all' : 'failed')}
               />
+            </Stack>
+
+            {/* Filters and Sort */}
+            <Stack 
+              direction={{ xs: 'column', sm: 'row' }} 
+              spacing={2} 
+              justifyContent="space-between"
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+            >
+              <ToggleButtonGroup
+                value={statusFilter}
+                exclusive
+                onChange={handleStatusFilterChange}
+                size="small"
+                aria-label="status filter"
+              >
+                <ToggleButton value="all" aria-label="all">
+                  All
+                </ToggleButton>
+                <ToggleButton value="running" aria-label="running">
+                  Running
+                </ToggleButton>
+                <ToggleButton value="completed" aria-label="completed">
+                  Completed
+                </ToggleButton>
+                <ToggleButton value="failed" aria-label="failed">
+                  Failed
+                </ToggleButton>
+              </ToggleButtonGroup>
+
+              <FormControl size="small" sx={{ minWidth: 120 }}>
+                <InputLabel id="sort-select-label">Sort By</InputLabel>
+                <Select
+                  labelId="sort-select-label"
+                  id="sort-select"
+                  value={sortOrder}
+                  label="Sort By"
+                  onChange={handleSortChange}
+                >
+                  <MenuItem value="newest">Newest</MenuItem>
+                  <MenuItem value="oldest">Oldest</MenuItem>
+                </Select>
+              </FormControl>
             </Stack>
 
             {/* Tasks Table */}
@@ -213,18 +309,23 @@ export default function TasksPage() {
                   )}
 
                   {/* Empty State */}
-                  {!isLoading && tasksData.length === 0 && (
+                  {!isLoading && filteredData.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={8} align="center" sx={{ py: 6 }}>
-                        <Typography color="text.secondary">
-                          暂无任务
-                        </Typography>
+                        <Stack spacing={2} alignItems="center">
+                          <FilterListRoundedIcon sx={{ fontSize: 40, color: 'text.secondary', opacity: 0.5 }} />
+                          <Typography color="text.secondary">
+                            {statusFilter !== 'all' 
+                              ? '没有找到匹配的任务' 
+                              : '暂无任务'}
+                          </Typography>
+                        </Stack>
                       </TableCell>
                     </TableRow>
                   )}
 
                   {/* Data Rows */}
-                  {!isLoading && tasksData.map((task) => {
+                  {!isLoading && filteredData.map((task) => {
                     const status = statusConfig[task.status];
                     return (
                       <TableRow key={task.task_id} hover>

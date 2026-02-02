@@ -20,13 +20,21 @@ import {
   Alert,
   Tooltip,
   Skeleton,
+  ToggleButton,
+  ToggleButtonGroup,
+  MenuItem,
+  Select,
+  FormControl,
+  InputLabel,
 } from '@mui/material';
+import type { SelectChangeEvent } from '@mui/material';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import VisibilityRoundedIcon from '@mui/icons-material/VisibilityRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import TrendingUpRoundedIcon from '@mui/icons-material/TrendingUpRounded';
 import TrendingDownRoundedIcon from '@mui/icons-material/TrendingDownRounded';
 import TrendingFlatRoundedIcon from '@mui/icons-material/TrendingFlatRounded';
+import FilterListRoundedIcon from '@mui/icons-material/FilterListRounded';
 
 import { useAnalysisHistory } from '@/hooks/useApi';
 import type { AnalysisHistory } from '@/types';
@@ -83,6 +91,8 @@ function SkeletonRow() {
 export default function HistoryPage() {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [sortOrder, setSortOrder] = useState<'newest' | 'oldest' | 'score_high' | 'score_low'>('newest');
   
   const { 
     data: historyResponse, 
@@ -95,19 +105,61 @@ export default function HistoryPage() {
 
   const historyData: AnalysisHistory[] = historyResponse?.data || [];
 
-  // Filter by search query
+  // Filter and Sort
   const filteredData = useMemo(() => {
-    if (!searchQuery.trim()) return historyData;
-    const query = searchQuery.toLowerCase();
-    return historyData.filter(
-      (item) =>
-        item.code.toLowerCase().includes(query) ||
-        item.name.toLowerCase().includes(query)
-    );
-  }, [historyData, searchQuery]);
+    let result = [...historyData];
+
+    // Filter by search query
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(
+        (item) =>
+          item.code.toLowerCase().includes(query) ||
+          item.name.toLowerCase().includes(query)
+      );
+    }
+
+    // Filter by status
+    if (statusFilter !== 'all') {
+      result = result.filter((item) => {
+        const signal = getSignalFromAdvice(item.operation_advice);
+        return signal === statusFilter;
+      });
+    }
+
+    // Sort
+    result.sort((a, b) => {
+      switch (sortOrder) {
+        case 'newest':
+          return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        case 'oldest':
+          return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        case 'score_high':
+          return b.sentiment_score - a.sentiment_score;
+        case 'score_low':
+          return a.sentiment_score - b.sentiment_score;
+        default:
+          return 0;
+      }
+    });
+
+    return result;
+  }, [historyData, searchQuery, statusFilter, sortOrder]);
+
+  const handleStatusFilterChange = (
+    _event: React.MouseEvent<HTMLElement>,
+    newFilter: string | null,
+  ) => {
+    if (newFilter !== null) {
+      setStatusFilter(newFilter);
+    }
+  };
+
+  const handleSortChange = (event: SelectChangeEvent) => {
+    setSortOrder(event.target.value as any);
+  };
 
   const handleViewDetail = (item: AnalysisHistory) => {
-    // Navigate to analysis page with query_id
     navigate(`/analysis/${item.query_id}`);
   };
 
@@ -136,7 +188,12 @@ export default function HistoryPage() {
         <CardContent>
           <Stack spacing={3}>
             {/* Search and Filters */}
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Stack 
+              direction={{ xs: 'column', md: 'row' }} 
+              spacing={2} 
+              justifyContent="space-between"
+              alignItems={{ xs: 'stretch', md: 'center' }}
+            >
               <TextField
                 size="small"
                 placeholder="Search by stock code or name..."
@@ -151,13 +208,57 @@ export default function HistoryPage() {
                     ),
                   }
                 }}
-                sx={{ width: 280 }}
+                sx={{ width: { xs: '100%', md: 280 } }}
               />
+
+              <Stack direction="row" spacing={2} alignItems="center">
+                {/* Status Filter */}
+                <ToggleButtonGroup
+                  value={statusFilter}
+                  exclusive
+                  onChange={handleStatusFilterChange}
+                  size="small"
+                  aria-label="status filter"
+                >
+                  <ToggleButton value="all" aria-label="all">
+                    All
+                  </ToggleButton>
+                  <ToggleButton value="buy" aria-label="buy" color="success">
+                    Buy
+                  </ToggleButton>
+                  <ToggleButton value="hold" aria-label="hold" color="warning">
+                    Hold
+                  </ToggleButton>
+                  <ToggleButton value="sell" aria-label="sell" color="error">
+                    Sell
+                  </ToggleButton>
+                </ToggleButtonGroup>
+
+                {/* Sort Order */}
+                <FormControl size="small" sx={{ minWidth: 120 }}>
+                  <InputLabel id="sort-select-label">Sort By</InputLabel>
+                  <Select
+                    labelId="sort-select-label"
+                    id="sort-select"
+                    value={sortOrder}
+                    label="Sort By"
+                    onChange={handleSortChange}
+                  >
+                    <MenuItem value="newest">Newest</MenuItem>
+                    <MenuItem value="oldest">Oldest</MenuItem>
+                    <MenuItem value="score_high">Score (High)</MenuItem>
+                    <MenuItem value="score_low">Score (Low)</MenuItem>
+                  </Select>
+                </FormControl>
+              </Stack>
+            </Stack>
+            
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Typography variant="body2" color="text.secondary">
                 {isLoading ? (
                   <Skeleton width={80} />
                 ) : (
-                  `${filteredData.length} records`
+                  `${filteredData.length} records found`
                 )}
               </Typography>
             </Stack>
@@ -191,9 +292,14 @@ export default function HistoryPage() {
                   {!isLoading && filteredData.length === 0 && (
                     <TableRow>
                       <TableCell colSpan={6} align="center" sx={{ py: 6 }}>
-                        <Typography color="text.secondary">
-                          {searchQuery ? '没有找到匹配的记录' : '暂无分析历史'}
-                        </Typography>
+                        <Stack spacing={2} alignItems="center">
+                          <FilterListRoundedIcon sx={{ fontSize: 40, color: 'text.secondary', opacity: 0.5 }} />
+                          <Typography color="text.secondary">
+                            {searchQuery || statusFilter !== 'all' 
+                              ? '没有找到匹配的记录' 
+                              : '暂无分析历史'}
+                          </Typography>
+                        </Stack>
                       </TableCell>
                     </TableRow>
                   )}

@@ -15,6 +15,8 @@ import TrendingFlatRoundedIcon from '@mui/icons-material/TrendingFlatRounded';
 import GpsFixedRoundedIcon from '@mui/icons-material/GpsFixedRounded';
 import type { Dashboard, DecisionType } from '@/types';
 
+import StockChart from './StockChart';
+
 interface DecisionDashboardProps {
   dashboard: Dashboard;
   stockCode: string;
@@ -232,6 +234,12 @@ export default function DecisionDashboard({ dashboard, stockCode, stockName }: D
           </Stack>
         </CardContent>
       </Card>
+
+      {/* Technical Chart */}
+      <StockChart 
+        code={stockCode} 
+        name={stockName} 
+      />
 
       {/* Data Perspective & Intelligence */}
       <Grid container spacing={3}>
