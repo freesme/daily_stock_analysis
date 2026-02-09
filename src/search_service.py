@@ -17,7 +17,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from itertools import cycle
 import requests
 from newspaper import Article, Config
@@ -942,6 +942,11 @@ class SearchService:
         
         if not self._providers:
             logger.warning("未配置任何搜索引擎 API Key，新闻搜索功能将不可用")
+
+        # In-memory search result cache: {cache_key: (timestamp, SearchResponse)}
+        self._cache: Dict[str, Tuple[float, 'SearchResponse']] = {}
+        # Default cache TTL in seconds (10 minutes)
+        self._cache_ttl: int = 600
     
     @staticmethod
     def _is_foreign_stock(stock_code: str) -> bool:
@@ -963,6 +968,40 @@ class SearchService:
     def is_available(self) -> bool:
         """检查是否有可用的搜索引擎"""
         return any(p.is_available for p in self._providers)
+
+    def _cache_key(self, query: str, max_results: int, days: int) -> str:
+        """Build a cache key from query parameters."""
+        return f"{query}|{max_results}|{days}"
+
+    def _get_cached(self, key: str) -> Optional['SearchResponse']:
+        """Return cached SearchResponse if still valid, else None."""
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        ts, response = entry
+        if time.time() - ts > self._cache_ttl:
+            del self._cache[key]
+            return None
+        logger.debug(f"Search cache hit: {key[:60]}...")
+        return response
+
+    def _put_cache(self, key: str, response: 'SearchResponse') -> None:
+        """Store a successful SearchResponse in cache."""
+        # Hard cap: evict oldest entries when cache exceeds limit
+        _MAX_CACHE_SIZE = 500
+        if len(self._cache) >= _MAX_CACHE_SIZE:
+            now = time.time()
+            # First pass: remove expired entries
+            expired = [k for k, (ts, _) in self._cache.items() if now - ts > self._cache_ttl]
+            for k in expired:
+                del self._cache[k]
+            # Second pass: if still over limit, evict oldest entries (FIFO)
+            if len(self._cache) >= _MAX_CACHE_SIZE:
+                excess = len(self._cache) - _MAX_CACHE_SIZE + 1
+                oldest = sorted(self._cache.keys(), key=lambda k: self._cache[k][0])[:excess]
+                for k in oldest:
+                    del self._cache[k]
+        self._cache[key] = (time.time(), response)
     
     def search_stock_news(
         self,
@@ -1009,7 +1048,14 @@ class SearchService:
             query = f"{stock_name} {stock_code} 股票 最新消息"
 
         logger.info(f"搜索股票新闻: {stock_name}({stock_code}), query='{query}', 时间范围: 近{search_days}天")
-        
+
+        # Check cache first
+        cache_key = self._cache_key(query, max_results, search_days)
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            logger.info(f"使用缓存搜索结果: {stock_name}({stock_code})")
+            return cached
+
         # 依次尝试各个搜索引擎
         for provider in self._providers:
             if not provider.is_available:
@@ -1019,6 +1065,7 @@ class SearchService:
             
             if response.success and response.results:
                 logger.info(f"使用 {provider.name} 搜索成功")
+                self._put_cache(cache_key, response)
                 return response
             else:
                 logger.warning(f"{provider.name} 搜索失败: {response.error_message}，尝试下一个引擎")

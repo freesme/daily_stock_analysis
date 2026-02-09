@@ -435,6 +435,28 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
         if records:
             record = records[0]
+            # Build report from DB record so completed tasks return real data
+            report_dict = AnalysisReport(
+                meta=ReportMeta(
+                    query_id=task_id,
+                    stock_code=record.code,
+                    stock_name=record.name,
+                    report_type=getattr(record, 'report_type', None),
+                    created_at=record.created_at.isoformat() if record.created_at else None,
+                ),
+                summary=ReportSummary(
+                    sentiment_score=record.sentiment_score,
+                    operation_advice=record.operation_advice,
+                    trend_prediction=record.trend_prediction,
+                    analysis_summary=record.analysis_summary,
+                ),
+                strategy=ReportStrategy(
+                    ideal_buy=str(getattr(record, 'ideal_buy', None)) if getattr(record, 'ideal_buy', None) is not None else None,
+                    secondary_buy=str(getattr(record, 'secondary_buy', None)) if getattr(record, 'secondary_buy', None) is not None else None,
+                    stop_loss=str(getattr(record, 'stop_loss', None)) if getattr(record, 'stop_loss', None) is not None else None,
+                    take_profit=str(getattr(record, 'take_profit', None)) if getattr(record, 'take_profit', None) is not None else None,
+                ),
+            ).model_dump()
             return TaskStatus(
                 task_id=task_id,
                 status="completed",
@@ -443,7 +465,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     query_id=task_id,
                     stock_code=record.code,
                     stock_name=record.name,
-                    report=None,
+                    report=report_dict,
                     created_at=record.created_at.isoformat() if record.created_at else datetime.now().isoformat()
                 ),
                 error=None

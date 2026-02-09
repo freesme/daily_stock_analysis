@@ -280,7 +280,29 @@ class AnalysisResult:
             '卖出': '🔴',
             '强烈卖出': '❌',
         }
-        return emoji_map.get(self.operation_advice, '🟡')
+        advice = self.operation_advice or ''
+        # Direct match first
+        if advice in emoji_map:
+            return emoji_map[advice]
+        # Handle compound advice like "卖出/观望" — use the first part
+        for part in advice.replace('/', '|').split('|'):
+            part = part.strip()
+            if part in emoji_map:
+                return emoji_map[part]
+        # Score-based fallback
+        score = self.sentiment_score
+        if score >= 80:
+            return '💚'
+        elif score >= 65:
+            return '🟢'
+        elif score >= 55:
+            return '🟡'
+        elif score >= 45:
+            return '⚪'
+        elif score >= 35:
+            return '🟠'
+        else:
+            return '🔴'
 
     def get_confidence_stars(self) -> str:
         """返回置信度星级"""

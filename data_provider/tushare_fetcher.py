@@ -14,6 +14,7 @@ TushareFetcher - 备用数据源 1 (Priority 2)
 3. 使用 tenacity 实现指数退避重试
 """
 
+import json as _json
 import logging
 import re
 import time
@@ -21,6 +22,7 @@ from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any
 
 import pandas as pd
+import requests
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -30,6 +32,7 @@ from tenacity import (
 )
 
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
+from .realtime_types import UnifiedRealtimeQuote
 from src.config import get_config
 import os
 
@@ -101,17 +104,58 @@ class TushareFetcher(BaseFetcher):
         try:
             import tushare as ts
             
-            # 设置 Token
+            # Set Token
             ts.set_token(config.tushare_token)
             
-            # 获取 API 实例
+            # Get API instance
             self._api = ts.pro_api()
             
+            # Fix: tushare SDK 1.4.x hardcodes api.waditu.com/dataapi which may
+            # be unavailable (503). Monkey-patch the query method to use the
+            # official api.tushare.pro endpoint which posts to root URL.
+            self._patch_api_endpoint(config.tushare_token)
+
             logger.info("Tushare API 初始化成功")
             
         except Exception as e:
             logger.error(f"Tushare API 初始化失败: {e}")
             self._api = None
+
+    def _patch_api_endpoint(self, token: str) -> None:
+        """
+        Patch tushare SDK to use the official api.tushare.pro endpoint.
+
+        The SDK (v1.4.x) hardcodes http://api.waditu.com/dataapi and appends
+        /{api_name} to the URL. That endpoint may return 503, causing silent
+        empty-DataFrame failures. This method replaces the query method to
+        POST directly to http://api.tushare.pro (root URL, no path suffix).
+        """
+        import types
+
+        TUSHARE_API_URL = "http://api.tushare.pro"
+        _token = token
+        _timeout = getattr(self._api, '_DataApi__timeout', 30)
+
+        def patched_query(self_api, api_name, fields='', **kwargs):
+            req_params = {
+                'api_name': api_name,
+                'token': _token,
+                'params': kwargs,
+                'fields': fields,
+            }
+            res = requests.post(TUSHARE_API_URL, json=req_params, timeout=_timeout)
+            if res.status_code != 200:
+                raise Exception(f"Tushare API HTTP {res.status_code}")
+            result = _json.loads(res.text)
+            if result['code'] != 0:
+                raise Exception(result['msg'])
+            data = result['data']
+            columns = data['fields']
+            items = data['items']
+            return pd.DataFrame(items, columns=columns)
+
+        self._api.query = types.MethodType(patched_query, self._api)
+        logger.debug(f"Tushare API endpoint patched to {TUSHARE_API_URL}")
 
     def _determine_priority(self) -> int:
         """
@@ -408,7 +452,7 @@ class TushareFetcher(BaseFetcher):
         
         return None
     
-    def get_realtime_quote(self, stock_code: str) -> Optional[dict]:
+    def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         获取实时行情
 
@@ -426,7 +470,7 @@ class TushareFetcher(BaseFetcher):
             return None
 
         from .realtime_types import (
-            UnifiedRealtimeQuote, RealtimeSource,
+            RealtimeSource,
             safe_float, safe_int
         )
 

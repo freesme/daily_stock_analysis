@@ -67,7 +67,7 @@ class NewsIntelItem(BaseModel):
     """新闻情报条目"""
 
     title: str = Field(..., description="新闻标题")
-    snippet: str = Field("", description="新闻摘要（最多50字）")
+    snippet: str = Field("", description="新闻摘要（最多200字）")
     url: str = Field(..., description="新闻链接")
 
     class Config:

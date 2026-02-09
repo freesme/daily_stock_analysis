@@ -537,27 +537,69 @@ class NotificationService:
         
         return "\n".join(report_lines)
     
+    @staticmethod
+    def _escape_md(name: str) -> str:
+        """Escape markdown special characters in stock names (e.g. *ST → \\*ST)."""
+        return name.replace('*', r'\*') if name else name
+
+    @staticmethod
+    def _clean_sniper_value(value: Any) -> str:
+        """Normalize sniper point values and remove redundant label prefixes."""
+        if value is None:
+            return 'N/A'
+        if isinstance(value, (int, float)):
+            return str(value)
+        if not isinstance(value, str):
+            return str(value)
+        if not value or value == 'N/A':
+            return value
+        prefixes = ['理想买入点：', '次优买入点：', '止损位：', '目标位：',
+                     '理想买入点:', '次优买入点:', '止损位:', '目标位:']
+        for prefix in prefixes:
+            if value.startswith(prefix):
+                return value[len(prefix):]
+        return value
+
     def _get_signal_level(self, result: AnalysisResult) -> tuple:
         """
-        根据操作建议获取信号等级和颜色
-        
+        Get signal level and color based on operation advice.
+
+        Priority: advice string takes precedence over score.
+        Score-based fallback is used only when advice doesn't match
+        any known value.
+
         Returns:
-            (信号文字, emoji, 颜色标记)
+            (signal_text, emoji, color_tag)
         """
         advice = result.operation_advice
         score = result.sentiment_score
-        
-        if advice in ['强烈买入'] or score >= 80:
+
+        # Advice-first lookup (exact match takes priority)
+        advice_map = {
+            '强烈买入': ('强烈买入', '💚', '强买'),
+            '买入': ('买入', '🟢', '买入'),
+            '加仓': ('买入', '🟢', '买入'),
+            '持有': ('持有', '🟡', '持有'),
+            '观望': ('观望', '⚪', '观望'),
+            '减仓': ('减仓', '🟠', '减仓'),
+            '卖出': ('卖出', '🔴', '卖出'),
+            '强烈卖出': ('卖出', '🔴', '卖出'),
+        }
+        if advice in advice_map:
+            return advice_map[advice]
+
+        # Score-based fallback when advice is unrecognized
+        if score >= 80:
             return ('强烈买入', '💚', '强买')
-        elif advice in ['买入', '加仓'] or score >= 65:
+        elif score >= 65:
             return ('买入', '🟢', '买入')
-        elif advice in ['持有'] or 55 <= score < 65:
+        elif score >= 55:
             return ('持有', '🟡', '持有')
-        elif advice in ['观望'] or 45 <= score < 55:
+        elif score >= 45:
             return ('观望', '⚪', '观望')
-        elif advice in ['减仓'] or 35 <= score < 45:
+        elif score >= 35:
             return ('减仓', '🟠', '减仓')
-        elif advice in ['卖出', '强烈卖出'] or score < 35:
+        elif score < 35:
             return ('卖出', '🔴', '卖出')
         else:
             return ('观望', '⚪', '观望')
@@ -604,9 +646,10 @@ class NotificationService:
                 "",
             ])
             for r in sorted_results:
-                emoji = r.get_emoji()
+                _, signal_emoji, _ = self._get_signal_level(r)
+                display_name = self._escape_md(r.name)
                 report_lines.append(
-                    f"{emoji} **{r.name}({r.code})**: {r.operation_advice} | "
+                    f"{signal_emoji} **{display_name}({r.code})**: {r.operation_advice} | "
                     f"评分 {r.sentiment_score} | {r.trend_prediction}"
                 )
             report_lines.extend([
@@ -620,8 +663,9 @@ class NotificationService:
             signal_text, signal_emoji, signal_tag = self._get_signal_level(result)
             dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
             
-            # 股票名称（优先使用 dashboard 或 result 中的名称）
-            stock_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+            # 股票名称（优先使用 dashboard 或 result 中的名称，转义 *ST 等特殊字符）
+            raw_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+            stock_name = self._escape_md(raw_name)
             
             report_lines.extend([
                 f"## {signal_emoji} {stock_name} ({result.code})",
@@ -769,10 +813,10 @@ class NotificationService:
                         "",
                         "| 点位类型 | 价格 |",
                         "|---------|------|",
-                        f"| 🎯 理想买入点 | {sniper.get('ideal_buy', 'N/A')} |",
-                        f"| 🔵 次优买入点 | {sniper.get('secondary_buy', 'N/A')} |",
-                        f"| 🛑 止损位 | {sniper.get('stop_loss', 'N/A')} |",
-                        f"| 🎊 目标位 | {sniper.get('take_profit', 'N/A')} |",
+                        f"| 🎯 理想买入点 | {self._clean_sniper_value(sniper.get('ideal_buy', 'N/A'))} |",
+                        f"| 🔵 次优买入点 | {self._clean_sniper_value(sniper.get('secondary_buy', 'N/A'))} |",
+                        f"| 🛑 止损位 | {self._clean_sniper_value(sniper.get('stop_loss', 'N/A'))} |",
+                        f"| 🎊 目标位 | {self._clean_sniper_value(sniper.get('take_profit', 'N/A'))} |",
                         "",
                     ])
                 
@@ -884,6 +928,7 @@ class NotificationService:
             
             # 股票名称
             stock_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+            stock_name = self._escape_md(stock_name)
             
             # 标题行：信号等级 + 股票名称
             lines.append(f"### {signal_emoji} **{signal_text}** | {stock_name}({result.code})")
@@ -1064,8 +1109,9 @@ class NotificationService:
         battle = dashboard.get('battle_plan', {}) if dashboard else {}
         intel = dashboard.get('intelligence', {}) if dashboard else {}
         
-        # 股票名称
-        stock_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+        # 股票名称（转义 *ST 等特殊字符）
+        raw_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
+        stock_name = self._escape_md(raw_name)
         
         lines = [
             f"## {signal_emoji} {stock_name} ({result.code})",
@@ -1159,6 +1205,18 @@ class NotificationService:
         
         return "\n".join(lines)
 
+    # Display name mapping for realtime data sources
+    _SOURCE_DISPLAY_NAMES = {
+        "tencent": "腾讯财经",
+        "akshare_em": "东方财富",
+        "akshare_sina": "新浪财经",
+        "akshare_qq": "腾讯财经",
+        "efinance": "东方财富(efinance)",
+        "tushare": "Tushare Pro",
+        "sina": "新浪财经",
+        "fallback": "降级兜底",
+    }
+
     def _append_market_snapshot(self, lines: List[str], result: AnalysisResult) -> None:
         snapshot = getattr(result, 'market_snapshot', None)
         if not snapshot:
@@ -1177,12 +1235,14 @@ class NotificationService:
         ])
 
         if "price" in snapshot:
+            raw_source = snapshot.get('source', 'N/A')
+            display_source = self._SOURCE_DISPLAY_NAMES.get(raw_source, raw_source)
             lines.extend([
                 "",
                 "| 当前价 | 量比 | 换手率 | 行情来源 |",
                 "|-------|------|--------|----------|",
                 f"| {snapshot.get('price', 'N/A')} | {snapshot.get('volume_ratio', 'N/A')} | "
-                f"{snapshot.get('turnover_rate', 'N/A')} | {snapshot.get('source', 'N/A')} |",
+                f"{snapshot.get('turnover_rate', 'N/A')} | {display_source} |",
             ])
 
         lines.append("")

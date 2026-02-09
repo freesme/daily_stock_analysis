@@ -19,6 +19,7 @@ export const backtestApi = {
     if (params.code) requestData.code = params.code;
     if (params.force) requestData.force = params.force;
     if (params.evalWindowDays) requestData.eval_window_days = params.evalWindowDays;
+    if (params.minAgeDays != null) requestData.min_age_days = params.minAgeDays;
     if (params.limit) requestData.limit = params.limit;
 
     const response = await apiClient.post<Record<string, unknown>>(
@@ -33,13 +34,15 @@ export const backtestApi = {
    */
   getResults: async (params: {
     code?: string;
+    evalWindowDays?: number;
     page?: number;
     limit?: number;
   } = {}): Promise<BacktestResultsResponse> => {
-    const { code, page = 1, limit = 20 } = params;
+    const { code, evalWindowDays, page = 1, limit = 20 } = params;
 
     const queryParams: Record<string, string | number> = { page, limit };
     if (code) queryParams.code = code;
+    if (evalWindowDays) queryParams.eval_window_days = evalWindowDays;
 
     const response = await apiClient.get<Record<string, unknown>>(
       '/api/v1/backtest/results',
@@ -58,10 +61,13 @@ export const backtestApi = {
   /**
    * Get overall performance metrics
    */
-  getOverallPerformance: async (): Promise<PerformanceMetrics | null> => {
+  getOverallPerformance: async (evalWindowDays?: number): Promise<PerformanceMetrics | null> => {
     try {
+      const params: Record<string, number> = {};
+      if (evalWindowDays) params.eval_window_days = evalWindowDays;
       const response = await apiClient.get<Record<string, unknown>>(
         '/api/v1/backtest/performance',
+        { params },
       );
       return toCamelCase<PerformanceMetrics>(response.data);
     } catch (err: unknown) {
@@ -76,10 +82,13 @@ export const backtestApi = {
   /**
    * Get per-stock performance metrics
    */
-  getStockPerformance: async (code: string): Promise<PerformanceMetrics | null> => {
+  getStockPerformance: async (code: string, evalWindowDays?: number): Promise<PerformanceMetrics | null> => {
     try {
+      const params: Record<string, number> = {};
+      if (evalWindowDays) params.eval_window_days = evalWindowDays;
       const response = await apiClient.get<Record<string, unknown>>(
         `/api/v1/backtest/performance/${encodeURIComponent(code)}`,
+        { params },
       );
       return toCamelCase<PerformanceMetrics>(response.data);
     } catch (err: unknown) {

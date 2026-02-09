@@ -58,9 +58,9 @@ class BacktestEngineTestCase(unittest.TestCase):
         self.assertEqual(res["simulated_return_pct"], 0.0)
         self.assertEqual(res["first_hit"], "not_applicable")
 
-    def test_wait_maps_to_cash_and_down_direction(self):
+    def test_wait_maps_to_cash_and_flat_direction(self):
         cfg = EvaluationConfig(eval_window_days=3, neutral_band_pct=2.0)
-        # Stock drops ~5%: AI said wait, correctly avoided loss → win
+        # Stock drops ~5%: AI said wait (neutral), stock moved significantly → loss
         bars = self._bars(date(2024, 1, 1), [98, 96, 95], highs=[99, 97, 96], lows=[97, 95, 94])
         res = BacktestEngine.evaluate_single(
             operation_advice="观望",
@@ -72,8 +72,8 @@ class BacktestEngineTestCase(unittest.TestCase):
             config=cfg,
         )
         self.assertEqual(res["position_recommendation"], "cash")
-        self.assertEqual(res["direction_expected"], "down")
-        self.assertEqual(res["outcome"], "win")
+        self.assertEqual(res["direction_expected"], "flat")
+        self.assertEqual(res["outcome"], "loss")
 
     def test_hold_win_when_flat(self):
         cfg = EvaluationConfig(eval_window_days=3, neutral_band_pct=2.0)
@@ -244,6 +244,41 @@ class BacktestEngineTestCase(unittest.TestCase):
             config=cfg,
         )
         self.assertEqual(res["eval_status"], "insufficient_data")
+
+    def test_unrecognized_advice_defaults_to_cash(self):
+        cfg = EvaluationConfig(eval_window_days=3, neutral_band_pct=2.0)
+        bars = self._bars(date(2024, 1, 1), [102, 104, 105], highs=[103, 105, 106], lows=[101, 103, 104])
+        res = BacktestEngine.evaluate_single(
+            operation_advice="some gibberish text",
+            analysis_date=date(2024, 1, 1),
+            start_price=100,
+            forward_bars=bars,
+            stop_loss=None,
+            take_profit=None,
+            config=cfg,
+        )
+        self.assertEqual(res["position_recommendation"], "cash")
+        self.assertEqual(res["direction_expected"], "flat")
+
+    def test_none_empty_advice_defaults_to_cash(self):
+        for advice in [None, "", "   "]:
+            pos = BacktestEngine.infer_position_recommendation(advice)
+            direction = BacktestEngine.infer_direction_expected(advice)
+            self.assertEqual(pos, "cash", f"Expected cash for advice={advice!r}")
+            self.assertEqual(direction, "flat", f"Expected flat for advice={advice!r}")
+
+    def test_negated_sell_not_classified_bearish(self):
+        # "do not sell" negates "sell" — should NOT be direction=down
+        self.assertNotEqual(BacktestEngine.infer_direction_expected("do not sell"), "down")
+
+    def test_chinese_negated_sell_not_bearish(self):
+        # "不要卖出" = "don't sell" — should NOT be direction=down
+        self.assertNotEqual(BacktestEngine.infer_direction_expected("不要卖出"), "down")
+
+    def test_wait_then_buy_classified_as_cash(self):
+        # "wait" matches first in priority order → cash
+        pos = BacktestEngine.infer_position_recommendation("wait for a dip then buy")
+        self.assertEqual(pos, "cash")
 
 
 if __name__ == "__main__":

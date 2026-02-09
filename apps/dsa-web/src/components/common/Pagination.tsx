@@ -61,9 +61,10 @@ export const Pagination: React.FC<PaginationProps> = ({
         className={`
           min-w-[40px] h-10 px-3 rounded-lg font-medium
           transition-all duration-200
+          hover:bg-hover hover:text-white border border-white/5
           ${isActive
-            ? 'bg-cyan text-black'
-            : 'bg-elevated text-secondary hover:bg-hover hover:text-white border border-white/5'
+            ? 'bg-cyan text-muted'
+            : 'bg-elevated text-secondary'
           }
           ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
         `}

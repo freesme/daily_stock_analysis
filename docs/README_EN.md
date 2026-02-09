@@ -280,8 +280,6 @@ PUSHPLUS_TOKEN=your_token_here
 
 ## 🎨 Sample Output
 
-![Demo](../sources/all_2026-01-13_221547.gif)
-
 ### Decision Dashboard Format
 
 ```markdown

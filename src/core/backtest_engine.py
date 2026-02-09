@@ -80,31 +80,40 @@ class BacktestEngine:
         "wait",
     )
 
+    # Negation prefixes (trailing spaces stripped for suffix-matching against prefix text).
+    # English patterns include trailing space in their canonical form; rstrip is
+    # applied during matching so "do not" matches prefix "do not " or "do not".
+    _NEGATION_PATTERNS = (
+        "not", "don't", "do not", "no", "never", "avoid",  # English
+        "不要", "不", "别", "勿", "没有",  # Chinese
+    )
+
     @classmethod
     def infer_direction_expected(cls, operation_advice: Optional[str]) -> str:
         """Infer expected direction: up/down/not_down/flat."""
         text = cls._normalize_text(operation_advice)
-        position = cls.infer_position_recommendation(operation_advice)
-        if position == "cash":
+        if cls._matches_intent(text, cls._BEARISH_KEYWORDS):
             return "down"
-        if cls._contains_any(text, cls._BULLISH_KEYWORDS):
+        if cls._matches_intent(text, cls._WAIT_KEYWORDS):
+            return "flat"
+        if cls._matches_intent(text, cls._BULLISH_KEYWORDS):
             return "up"
-        # "持有" in a long-only system: the stance is long, but the expectation
-        # is usually "not down" (i.e., rising or staying stable is acceptable).
-        if cls._contains_any(text, cls._HOLD_KEYWORDS):
+        if cls._matches_intent(text, cls._HOLD_KEYWORDS):
             return "not_down"
         return "flat"
 
     @classmethod
     def infer_position_recommendation(cls, operation_advice: Optional[str]) -> str:
-        """Infer recommended position: long/cash (long-only system)."""
+        """Infer recommended position: long/cash (long-only system).
+
+        Priority: bearish/wait -> cash, bullish/hold -> long, unrecognized -> cash.
+        """
         text = cls._normalize_text(operation_advice)
-        if cls._contains_any(text, cls._BEARISH_KEYWORDS):
+        if cls._matches_intent(text, cls._BEARISH_KEYWORDS) or cls._matches_intent(text, cls._WAIT_KEYWORDS):
             return "cash"
-        if cls._contains_any(text, cls._WAIT_KEYWORDS):
-            return "cash"
-        # hold/buy/add default to long
-        return "long"
+        if cls._matches_intent(text, cls._BULLISH_KEYWORDS) or cls._matches_intent(text, cls._HOLD_KEYWORDS):
+            return "long"
+        return "cash"
 
     @classmethod
     def evaluate_single(
@@ -343,11 +352,32 @@ class BacktestEngine:
     def _normalize_text(value: Optional[str]) -> str:
         return str(value or "").strip().lower()
 
-    @staticmethod
-    def _contains_any(text: str, keywords: Sequence[str]) -> bool:
+    @classmethod
+    def _matches_intent(cls, text: str, keywords: Sequence[str]) -> bool:
+        """Check if text expresses the intent of any keyword, accounting for negation.
+
+        Tier 1: exact match (covers clean labels like "买入", "hold").
+        Tier 2: substring match with negation guard.
+        Keywords are assumed to be lowercase (matching _normalize_text output).
+        """
         if not text:
             return False
-        return any(keyword.lower() in text for keyword in keywords)
+        for kw in keywords:
+            if text == kw:
+                return True
+        for kw in keywords:
+            idx = text.find(kw)
+            if idx == -1:
+                continue
+            if not cls._is_negated(text[:idx]):
+                return True
+        return False
+
+    @classmethod
+    def _is_negated(cls, prefix: str) -> bool:
+        """Check if the prefix text ends with a negation pattern."""
+        stripped = prefix.rstrip()
+        return any(stripped.endswith(neg) for neg in cls._NEGATION_PATTERNS)
 
     @classmethod
     def _classify_outcome(

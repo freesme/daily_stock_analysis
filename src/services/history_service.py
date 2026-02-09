@@ -186,8 +186,8 @@ class HistoryService:
             items: List[Dict[str, str]] = []
             for record in records:
                 snippet = (record.snippet or "").strip()
-                if len(snippet) > 50:
-                    snippet = f"{snippet[:47]}..."
+                if len(snippet) > 200:
+                    snippet = f"{snippet[:197]}..."
                 items.append({
                     "title": record.title,
                     "snippet": snippet,

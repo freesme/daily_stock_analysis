@@ -13,7 +13,7 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy import and_, delete, desc, func, select
 
-from src.storage import BacktestResult, BacktestSummary, DatabaseManager, AnalysisHistory, StockDaily
+from src.storage import BacktestResult, BacktestSummary, DatabaseManager, AnalysisHistory
 
 logger = logging.getLogger(__name__)
 
@@ -57,27 +57,6 @@ class BacktestRepository:
             rows = session.execute(query).scalars().all()
             return list(rows)
 
-    def get_start_daily(self, *, code: str, analysis_date: date) -> Optional[StockDaily]:
-        """Return StockDaily for analysis_date (preferred) or nearest previous date."""
-        with self.db.get_session() as session:
-            row = session.execute(
-                select(StockDaily)
-                .where(and_(StockDaily.code == code, StockDaily.date <= analysis_date))
-                .order_by(desc(StockDaily.date))
-                .limit(1)
-            ).scalar_one_or_none()
-            return row
-
-    def get_forward_bars(self, *, code: str, analysis_date: date, eval_window_days: int) -> List[StockDaily]:
-        with self.db.get_session() as session:
-            rows = session.execute(
-                select(StockDaily)
-                .where(and_(StockDaily.code == code, StockDaily.date > analysis_date))
-                .order_by(StockDaily.date)
-                .limit(eval_window_days)
-            ).scalars().all()
-            return list(rows)
-
     def save_result(self, result: BacktestResult) -> None:
         with self.db.get_session() as session:
             session.add(result)
@@ -117,6 +96,7 @@ class BacktestRepository:
         self,
         *,
         code: Optional[str],
+        eval_window_days: Optional[int] = None,
         days: Optional[int],
         offset: int,
         limit: int,
@@ -125,6 +105,8 @@ class BacktestRepository:
             conditions = []
             if code:
                 conditions.append(BacktestResult.code == code)
+            if eval_window_days is not None:
+                conditions.append(BacktestResult.eval_window_days == eval_window_days)
             if days:
                 cutoff = datetime.now() - timedelta(days=int(days))
                 conditions.append(BacktestResult.evaluated_at >= cutoff)
@@ -192,20 +174,22 @@ class BacktestRepository:
         *,
         scope: str,
         code: Optional[str],
-        eval_window_days: int,
+        eval_window_days: Optional[int] = None,
         engine_version: str,
     ) -> Optional[BacktestSummary]:
         with self.db.get_session() as session:
+            conditions = [
+                BacktestSummary.scope == scope,
+                BacktestSummary.code == code,
+                BacktestSummary.engine_version == engine_version,
+            ]
+            if eval_window_days is not None:
+                conditions.append(BacktestSummary.eval_window_days == eval_window_days)
+
             row = session.execute(
                 select(BacktestSummary)
-                .where(
-                    and_(
-                        BacktestSummary.scope == scope,
-                        BacktestSummary.code == code,
-                        BacktestSummary.eval_window_days == eval_window_days,
-                        BacktestSummary.engine_version == engine_version,
-                    )
-                )
+                .where(and_(*conditions))
+                .order_by(desc(BacktestSummary.computed_at))
                 .limit(1)
             ).scalar_one_or_none()
             return row

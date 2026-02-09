@@ -429,11 +429,41 @@ class Config:
             # - akshare_sina: 新浪财经，基本行情稳定，但无量比
             # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
             # - tushare: Tushare Pro，需要2000积分，数据全面
-            realtime_source_priority=os.getenv('REALTIME_SOURCE_PRIORITY', 'tencent,akshare_sina,efinance,akshare_em'),
+            realtime_source_priority=cls._resolve_realtime_source_priority(),
             realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
             circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300'))
         )
     
+    @classmethod
+    def _resolve_realtime_source_priority(cls) -> str:
+        """
+        Resolve realtime source priority with automatic tushare injection.
+
+        When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
+        explicitly set, automatically prepend 'tushare' to the default priority
+        so that the paid data source is utilized for realtime quotes as well.
+        """
+        explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
+        default_priority = 'tencent,akshare_sina,efinance,akshare_em'
+
+        if explicit:
+            # User explicitly set priority, respect it
+            return explicit
+
+        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
+        if tushare_token:
+            # Token configured but no explicit priority override
+            # Prepend tushare so the paid source is tried first
+            import logging
+            logger = logging.getLogger(__name__)
+            resolved = f'tushare,{default_priority}'
+            logger.info(
+                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
+            )
+            return resolved
+
+        return default_priority
+
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（主要用于测试）"""

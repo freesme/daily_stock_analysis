@@ -207,10 +207,10 @@ class MarketAnalyzer:
     #     """获取北向资金流入"""
     #     try:
     #         logger.info("[大盘] 获取北向资金...")
-            
+    #         
     #         # 获取北向资金数据
     #         df = ak.stock_hsgt_north_net_flow_in_em(symbol="北上")
-            
+    #         
     #         if df is not None and not df.empty:
     #             # 取最新一条数据
     #             latest = df.iloc[-1]
@@ -218,9 +218,9 @@ class MarketAnalyzer:
     #                 overview.north_flow = float(latest['当日净流入']) / 1e8  # 转为亿元
     #             elif '净流入' in df.columns:
     #                 overview.north_flow = float(latest['净流入']) / 1e8
-                    
+    #                 
     #             logger.info(f"[大盘] 北向资金净流入: {overview.north_flow:.2f}亿")
-                
+    #             
     #     except Exception as e:
     #         logger.warning(f"[大盘] 获取北向资金失败: {e}")
     
@@ -308,7 +308,8 @@ class MarketAnalyzer:
             
             if review:
                 logger.info(f"[大盘] 复盘报告生成成功，长度: {len(review)} 字符")
-                return review
+                # Inject structured data tables into LLM prose sections
+                return self._inject_data_into_review(review, overview)
             else:
                 logger.warning("[大盘] 大模型返回为空")
                 return self._generate_template_review(overview, news)
@@ -317,6 +318,92 @@ class MarketAnalyzer:
             logger.error(f"[大盘] 大模型生成复盘报告失败: {e}")
             return self._generate_template_review(overview, news)
     
+    def _inject_data_into_review(self, review: str, overview: MarketOverview) -> str:
+        """Inject structured data tables into the corresponding LLM prose sections."""
+        import re
+
+        # Build data blocks
+        stats_block = self._build_stats_block(overview)
+        indices_block = self._build_indices_block(overview)
+        sector_block = self._build_sector_block(overview)
+
+        # Inject market stats after "### 一、市场总结" section (before next ###)
+        if stats_block:
+            review = self._insert_after_section(review, r'###\s*一、市场总结', stats_block)
+
+        # Inject indices table after "### 二、指数点评" section
+        if indices_block:
+            review = self._insert_after_section(review, r'###\s*二、指数点评', indices_block)
+
+        # Inject sector rankings after "### 四、热点解读" section
+        if sector_block:
+            review = self._insert_after_section(review, r'###\s*四、热点解读', sector_block)
+
+        return review
+
+    @staticmethod
+    def _insert_after_section(text: str, heading_pattern: str, block: str) -> str:
+        """Insert a data block at the end of a markdown section (before the next ### heading)."""
+        import re
+        # Find the heading
+        match = re.search(heading_pattern, text)
+        if not match:
+            return text
+        start = match.end()
+        # Find the next ### heading after this one
+        next_heading = re.search(r'\n###\s', text[start:])
+        if next_heading:
+            insert_pos = start + next_heading.start()
+        else:
+            # No next heading — append at end
+            insert_pos = len(text)
+        # Insert the block before the next heading, with spacing
+        return text[:insert_pos].rstrip() + '\n\n' + block + '\n\n' + text[insert_pos:].lstrip('\n')
+
+    def _build_stats_block(self, overview: MarketOverview) -> str:
+        """Build market statistics block."""
+        has_stats = overview.up_count or overview.down_count or overview.total_amount
+        if not has_stats:
+            return ""
+        lines = [
+            f"> 📈 上涨 **{overview.up_count}** 家 / 下跌 **{overview.down_count}** 家 / "
+            f"平盘 **{overview.flat_count}** 家 | "
+            f"涨停 **{overview.limit_up_count}** / 跌停 **{overview.limit_down_count}** | "
+            f"成交额 **{overview.total_amount:.0f}** 亿"
+        ]
+        return "\n".join(lines)
+
+    def _build_indices_block(self, overview: MarketOverview) -> str:
+        """Build indices table block (without amplitude)."""
+        if not overview.indices:
+            return ""
+        lines = [
+            "| 指数 | 最新 | 涨跌幅 | 成交额(亿) |",
+            "|------|------|--------|-----------|"]
+        for idx in overview.indices:
+            arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
+            amount_raw = idx.amount or 0.0
+            amount_yi = amount_raw / 1e8 if amount_raw > 1e6 else amount_raw
+            lines.append(f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | {amount_yi:.0f} |")
+        return "\n".join(lines)
+
+    def _build_sector_block(self, overview: MarketOverview) -> str:
+        """Build sector ranking block."""
+        if not overview.top_sectors and not overview.bottom_sectors:
+            return ""
+        lines = []
+        if overview.top_sectors:
+            top = " | ".join(
+                [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:5]]
+            )
+            lines.append(f"> 🔥 领涨: {top}")
+        if overview.bottom_sectors:
+            bot = " | ".join(
+                [f"**{s['name']}**({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:5]]
+            )
+            lines.append(f"> 💧 领跌: {bot}")
+        return "\n".join(lines)
+
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
         """构建复盘报告 Prompt"""
         # 指数行情信息（简洁格式，不用emoji）

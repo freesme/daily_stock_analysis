@@ -9,6 +9,7 @@ export interface BacktestRunRequest {
   code?: string;
   force?: boolean;
   evalWindowDays?: number;
+  minAgeDays?: number;
   limit?: number;
 }
 

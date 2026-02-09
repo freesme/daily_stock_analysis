@@ -10,10 +10,11 @@
 """
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional, List, Dict, Any
 
 import pandas as pd
+from sqlalchemy import and_, desc, select
 
 from src.storage import DatabaseManager, StockDaily
 
@@ -136,3 +137,25 @@ class StockRepository:
         except Exception as e:
             logger.error(f"获取分析上下文失败: {e}")
             return None
+
+    def get_start_daily(self, *, code: str, analysis_date: date) -> Optional[StockDaily]:
+        """Return StockDaily for analysis_date (preferred) or nearest previous date."""
+        with self.db.get_session() as session:
+            row = session.execute(
+                select(StockDaily)
+                .where(and_(StockDaily.code == code, StockDaily.date <= analysis_date))
+                .order_by(desc(StockDaily.date))
+                .limit(1)
+            ).scalar_one_or_none()
+            return row
+
+    def get_forward_bars(self, *, code: str, analysis_date: date, eval_window_days: int) -> List[StockDaily]:
+        """Return forward daily bars after analysis_date, up to eval_window_days."""
+        with self.db.get_session() as session:
+            rows = session.execute(
+                select(StockDaily)
+                .where(and_(StockDaily.code == code, StockDaily.date > analysis_date))
+                .order_by(StockDaily.date)
+                .limit(eval_window_days)
+            ).scalars().all()
+            return list(rows)

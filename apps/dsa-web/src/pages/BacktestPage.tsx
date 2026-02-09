@@ -109,6 +109,8 @@ const RunSummary: React.FC<{ data: BacktestRunResponse }> = ({ data }) => (
 const BacktestPage: React.FC = () => {
   // Input state
   const [codeFilter, setCodeFilter] = useState('');
+  const [evalDays, setEvalDays] = useState('');
+  const [forceRerun, setForceRerun] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -126,10 +128,10 @@ const BacktestPage: React.FC = () => {
   const [isLoadingPerf, setIsLoadingPerf] = useState(false);
 
   // Fetch results
-  const fetchResults = useCallback(async (page = 1, code?: string) => {
+  const fetchResults = useCallback(async (page = 1, code?: string, windowDays?: number) => {
     setIsLoadingResults(true);
     try {
-      const response = await backtestApi.getResults({ code: code || undefined, page, limit: pageSize });
+      const response = await backtestApi.getResults({ code: code || undefined, evalWindowDays: windowDays, page, limit: pageSize });
       setResults(response.items);
       setTotalResults(response.total);
       setCurrentPage(response.page);
@@ -141,14 +143,14 @@ const BacktestPage: React.FC = () => {
   }, []);
 
   // Fetch performance
-  const fetchPerformance = useCallback(async (code?: string) => {
+  const fetchPerformance = useCallback(async (code?: string, windowDays?: number) => {
     setIsLoadingPerf(true);
     try {
-      const overall = await backtestApi.getOverallPerformance();
+      const overall = await backtestApi.getOverallPerformance(windowDays);
       setOverallPerf(overall);
 
       if (code) {
-        const stock = await backtestApi.getStockPerformance(code);
+        const stock = await backtestApi.getStockPerformance(code, windowDays);
         setStockPerf(stock);
       } else {
         setStockPerf(null);
@@ -160,11 +162,21 @@ const BacktestPage: React.FC = () => {
     }
   }, []);
 
-  // Initial load
+  // Initial load — fetch performance first, then filter results by its window
   useEffect(() => {
-    fetchResults(1);
-    fetchPerformance();
-  }, [fetchResults, fetchPerformance]);
+    const init = async () => {
+      // Get latest performance (unfiltered returns most recent summary)
+      const overall = await backtestApi.getOverallPerformance();
+      setOverallPerf(overall);
+      // Use the summary's eval_window_days to filter results consistently
+      const windowDays = overall?.evalWindowDays;
+      if (windowDays && !evalDays) {
+        setEvalDays(String(windowDays));
+      }
+      fetchResults(1, undefined, windowDays);
+    };
+    init();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Run backtest
   const handleRun = async () => {
@@ -173,11 +185,17 @@ const BacktestPage: React.FC = () => {
     setRunError(null);
     try {
       const code = codeFilter.trim() || undefined;
-      const response = await backtestApi.run({ code });
+      const evalWindowDays = evalDays ? parseInt(evalDays, 10) : undefined;
+      const response = await backtestApi.run({
+        code,
+        force: forceRerun || undefined,
+        minAgeDays: forceRerun ? 0 : undefined,
+        evalWindowDays,
+      });
       setRunResult(response);
-      // Refresh data
-      fetchResults(1, codeFilter.trim() || undefined);
-      fetchPerformance(codeFilter.trim() || undefined);
+      // Refresh data with same eval_window_days
+      fetchResults(1, codeFilter.trim() || undefined, evalWindowDays);
+      fetchPerformance(codeFilter.trim() || undefined, evalWindowDays);
     } catch (err) {
       setRunError(err instanceof Error ? err.message : 'Backtest failed');
     } finally {
@@ -188,9 +206,10 @@ const BacktestPage: React.FC = () => {
   // Filter by code
   const handleFilter = () => {
     const code = codeFilter.trim() || undefined;
+    const windowDays = evalDays ? parseInt(evalDays, 10) : undefined;
     setCurrentPage(1);
-    fetchResults(1, code);
-    fetchPerformance(code);
+    fetchResults(1, code, windowDays);
+    fetchPerformance(code, windowDays);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -202,7 +221,8 @@ const BacktestPage: React.FC = () => {
   // Pagination
   const totalPages = Math.ceil(totalResults / pageSize);
   const handlePageChange = (page: number) => {
-    fetchResults(page, codeFilter.trim() || undefined);
+    const windowDays = evalDays ? parseInt(evalDays, 10) : undefined;
+    fetchResults(page, codeFilter.trim() || undefined, windowDays);
   };
 
   return (
@@ -228,6 +248,39 @@ const BacktestPage: React.FC = () => {
             className="btn-secondary flex items-center gap-1.5 whitespace-nowrap"
           >
             Filter
+          </button>
+          <div className="flex items-center gap-1 whitespace-nowrap">
+            <span className="text-xs text-muted">Window</span>
+            <input
+              type="number"
+              min={1}
+              max={120}
+              value={evalDays}
+              onChange={(e) => setEvalDays(e.target.value)}
+              placeholder="10"
+              disabled={isRunning}
+              className="input-terminal w-14 text-center text-xs py-2"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => setForceRerun(!forceRerun)}
+            disabled={isRunning}
+            className={`
+              flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium
+              transition-all duration-200 whitespace-nowrap border cursor-pointer
+              ${forceRerun
+                ? 'border-cyan/40 bg-cyan/10 text-cyan shadow-[0_0_8px_rgba(0,212,255,0.15)]'
+                : 'border-white/10 bg-transparent text-muted hover:border-white/20 hover:text-secondary'
+              }
+              disabled:opacity-50 disabled:cursor-not-allowed
+            `}
+          >
+            <span className={`
+              inline-block w-1.5 h-1.5 rounded-full transition-colors duration-200
+              ${forceRerun ? 'bg-cyan shadow-[0_0_4px_rgba(0,212,255,0.6)]' : 'bg-white/20'}
+            `} />
+            Force
           </button>
           <button
             type="button"
