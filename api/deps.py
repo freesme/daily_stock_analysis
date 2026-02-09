@@ -12,6 +12,7 @@ API 依赖注入模块
 
 from typing import Generator
 
+from fastapi import Request
 from sqlalchemy.orm import Session
 
 from src.storage import DatabaseManager
@@ -61,5 +62,10 @@ def get_database_manager() -> DatabaseManager:
     return DatabaseManager.get_instance()
 
 
-def get_system_config_service() -> SystemConfigService:
-    return SystemConfigService()
+def get_system_config_service(request: Request) -> SystemConfigService:
+    """Get app-lifecycle shared SystemConfigService instance."""
+    service = getattr(request.app.state, "system_config_service", None)
+    if service is None:
+        service = SystemConfigService()
+        request.app.state.system_config_service = service
+    return service
