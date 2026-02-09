@@ -20,15 +20,15 @@ _CATEGORY_DEFINITIONS: List[Dict[str, Any]] = [
         "display_order": 10,
     },
     {
-        "category": "data_source",
-        "title": "Data Source",
-        "description": "Market data provider credentials and priority settings.",
-        "display_order": 20,
-    },
-    {
         "category": "ai_model",
         "title": "AI Model",
         "description": "Model providers, model names, and inference parameters.",
+        "display_order": 20,
+    },
+    {
+        "category": "data_source",
+        "title": "Data Source",
+        "description": "Market data provider credentials and priority settings.",
         "display_order": 30,
     },
     {
@@ -118,8 +118,8 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "title": "SerpAPI Keys",
         "description": "Comma-separated SerpAPI keys.",
         "category": "data_source",
-        "data_type": "array",
-        "ui_control": "textarea",
+        "data_type": "string",
+        "ui_control": "password",
         "is_sensitive": True,
         "is_required": False,
         "is_editable": True,
