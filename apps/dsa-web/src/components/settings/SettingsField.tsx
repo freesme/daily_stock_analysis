@@ -4,6 +4,24 @@ import { Select } from '../common';
 import type { ConfigValidationIssue, SystemConfigItem } from '../../types/systemConfig';
 import { getFieldDescriptionZh, getFieldTitleZh } from '../../utils/systemConfigI18n';
 
+function isMultiValueField(item: SystemConfigItem): boolean {
+  const validation = (item.schema?.validation ?? {}) as Record<string, unknown>;
+  return Boolean(validation.multiValue ?? validation.multi_value);
+}
+
+function parseMultiValues(value: string): string[] {
+  if (!value) {
+    return [''];
+  }
+
+  const values = value.split(',').map((entry) => entry.trim());
+  return values.length ? values : [''];
+}
+
+function serializeMultiValues(values: string[]): string {
+  return values.map((entry) => entry.trim()).join(',');
+}
+
 interface SettingsFieldProps {
   item: SystemConfigItem;
   value: string;
@@ -23,6 +41,7 @@ function renderFieldControl(
   const schema = item.schema;
   const commonClass = 'input-terminal';
   const controlType = schema?.uiControl ?? 'text';
+  const isMultiValue = isMultiValueField(item);
 
   if (controlType === 'textarea') {
     return (
@@ -63,6 +82,60 @@ function renderFieldControl(
   }
 
   if (controlType === 'password') {
+    if (isMultiValue) {
+      const values = parseMultiValues(value);
+
+      return (
+        <div className="space-y-2">
+          {values.map((entry, index) => (
+            <div className="flex items-center gap-2" key={`${item.key}-${index}`}>
+              <input
+                type={isSecretVisible ? 'text' : 'password'}
+                className={`${commonClass} flex-1`}
+                value={entry}
+                disabled={disabled || !schema?.isEditable}
+                onChange={(event) => {
+                  const nextValues = [...values];
+                  nextValues[index] = event.target.value;
+                  onChange(serializeMultiValues(nextValues));
+                }}
+              />
+              <button
+                type="button"
+                className="btn-secondary !px-3 !py-2 text-xs"
+                disabled={disabled || !schema?.isEditable || values.length <= 1}
+                onClick={() => {
+                  const nextValues = values.filter((_, rowIndex) => rowIndex !== index);
+                  onChange(serializeMultiValues(nextValues.length ? nextValues : ['']));
+                }}
+              >
+                删除
+              </button>
+            </div>
+          ))}
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn-secondary !px-3 !py-2 text-xs"
+              disabled={disabled || !schema?.isEditable}
+              onClick={() => onChange(serializeMultiValues([...values, '']))}
+            >
+              添加 Key
+            </button>
+            <button
+              type="button"
+              className="btn-secondary !px-3 !py-2 text-xs"
+              disabled={disabled || !schema?.isEditable}
+              onClick={onToggleSecretVisible}
+            >
+              {isSecretVisible ? '隐藏' : '显示'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="flex items-center gap-2">
         <input
@@ -105,6 +178,7 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
   issues = [],
 }) => {
   const schema = item.schema;
+  const isMultiValue = isMultiValueField(item);
   const title = getFieldTitleZh(item.key, item.key);
   const description = getFieldDescriptionZh(item.key);
   const hasError = issues.some((issue) => issue.severity === 'error');
@@ -138,7 +212,12 @@ export const SettingsField: React.FC<SettingsFieldProps> = ({
         )}
       </div>
 
-      {schema?.isSensitive ? <p className="mt-2 text-[11px] text-secondary">密钥默认隐藏，可点击“显示”查看明文。</p> : null}
+      {schema?.isSensitive ? (
+        <p className="mt-2 text-[11px] text-secondary">
+          密钥默认隐藏，可点击“显示”查看明文。
+          {isMultiValue ? ' 支持添加多个输入框进行增删。' : ''}
+        </p>
+      ) : null}
 
       {issues.length ? (
         <div className="mt-2 space-y-1">

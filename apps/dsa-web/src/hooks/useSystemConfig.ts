@@ -48,6 +48,23 @@ function getReadableError(error: unknown, fallback: string): string {
   return fallback;
 }
 
+function isMultiValueSchema(schema: SystemConfigItem['schema'] | undefined): boolean {
+  const validation = (schema?.validation ?? {}) as Record<string, unknown>;
+  return Boolean(validation.multiValue ?? validation.multi_value);
+}
+
+function normalizeFieldValue(value: string, schema: SystemConfigItem['schema'] | undefined): string {
+  if (!isMultiValueSchema(schema)) {
+    return value;
+  }
+
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .join(',');
+}
+
 export function useSystemConfig() {
   // Server state
   const [configVersion, setConfigVersion] = useState<string>('');
@@ -75,6 +92,14 @@ export function useSystemConfig() {
       })),
     );
   }, [draftValues, serverItems]);
+
+  const serverItemByKey = useMemo(() => {
+    const map: Record<string, SystemConfigItem> = {};
+    for (const item of serverItems) {
+      map[item.key] = item;
+    }
+    return map;
+  }, [serverItems]);
 
   const categories = useMemo<SystemConfigCategorySchema[]>(() => {
     // Infer tabs from loaded config item schema metadata.
@@ -115,8 +140,14 @@ export function useSystemConfig() {
   const dirtyKeys = useMemo(() => {
     const keys: string[] = [];
     for (const item of serverItems) {
-      const draft = draftValues[item.key];
-      if (draft !== undefined && draft !== item.value) {
+      const draftRaw = draftValues[item.key];
+      if (draftRaw === undefined) {
+        continue;
+      }
+
+      const normalizedDraft = normalizeFieldValue(draftRaw, item.schema);
+      const normalizedCurrent = normalizeFieldValue(item.value, item.schema);
+      if (normalizedDraft !== normalizedCurrent) {
         keys.push(item.key);
       }
     }
@@ -194,11 +225,21 @@ export function useSystemConfig() {
   }, []);
 
   const getChangedItems = useCallback((): SystemConfigUpdateItem[] => {
-    return dirtyKeys.map((key) => ({
-      key,
-      value: draftValues[key] ?? '',
-    }));
-  }, [dirtyKeys, draftValues]);
+    return dirtyKeys
+      .map((key) => {
+        const serverItem = serverItemByKey[key];
+        const normalizedValue = normalizeFieldValue(draftValues[key] ?? '', serverItem?.schema);
+        return {
+          key,
+          value: normalizedValue,
+        };
+      })
+      .filter((item) => {
+        const serverItem = serverItemByKey[item.key];
+        const normalizedCurrent = normalizeFieldValue(serverItem?.value ?? '', serverItem?.schema);
+        return item.value !== normalizedCurrent;
+      });
+  }, [dirtyKeys, draftValues, serverItemByKey]);
 
   const save = useCallback(async (): Promise<SaveResult> => {
     if (!hasDirty) {
