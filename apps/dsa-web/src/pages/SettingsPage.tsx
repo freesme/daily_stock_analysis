@@ -53,7 +53,7 @@ const SettingsPage: React.FC = () => {
           <div>
             <h1 className="text-xl font-semibold text-white">系统设置</h1>
             <p className="text-sm text-secondary">
-              通过可视化界面管理运行配置，无需手动编辑服务器文件。
+              默认使用 .env 中的配置
             </p>
           </div>
 
