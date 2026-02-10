@@ -45,13 +45,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.config import get_config, Config
-from src.feishu_doc import FeishuDocManager
 from src.logging_config import setup_logging
-from src.notification import NotificationService
-from src.core.pipeline import StockAnalysisPipeline
-from src.core.market_review import run_market_review
-from src.search_service import SearchService
-from src.analyzer import GeminiAnalyzer
 
 
 logger = logging.getLogger(__name__)
@@ -215,6 +209,9 @@ def run_full_analysis(
     这是定时任务调用的主函数
     """
     try:
+        from src.core.pipeline import StockAnalysisPipeline
+        from src.core.market_review import run_market_review
+
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
@@ -273,6 +270,8 @@ def run_full_analysis(
 
         # === 新增：生成飞书云文档 ===
         try:
+            from src.feishu_doc import FeishuDocManager
+
             feishu_doc = FeishuDocManager()
             if feishu_doc.is_configured() and (results or market_report):
                 logger.info("正在创建飞书云文档...")
@@ -486,6 +485,11 @@ def main() -> int:
 
         # 模式1: 仅大盘复盘
         if args.market_review:
+            from src.analyzer import GeminiAnalyzer
+            from src.core.market_review import run_market_review
+            from src.notification import NotificationService
+            from src.search_service import SearchService
+
             logger.info("模式: 仅大盘复盘")
             notifier = NotificationService()
             

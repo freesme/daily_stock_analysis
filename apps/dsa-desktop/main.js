@@ -107,15 +107,17 @@ function findAvailablePort(startPort = 8000, endPort = 8100) {
   });
 }
 
-function waitForHealth(url, timeoutMs = 60000, intervalMs = 800) {
+function waitForHealth(url, timeoutMs = 60000, intervalMs = 250) {
   const start = Date.now();
+  let attempts = 0;
 
   return new Promise((resolve, reject) => {
     const attempt = () => {
+      attempts += 1;
       const req = http.get(url, (res) => {
         res.resume();
         if (res.statusCode === 200) {
-          resolve();
+          resolve({ elapsedMs: Date.now() - start, attempts });
           return;
         }
         if (Date.now() - start > timeoutMs) {
@@ -142,12 +144,16 @@ function startBackend({ port, envFile, dbPath, logDir }) {
   const backendPath = resolveBackendPath();
   const env = {
     ...process.env,
+    DSA_DESKTOP_MODE: 'true',
     ENV_FILE: envFile,
     DATABASE_PATH: dbPath,
     LOG_DIR: logDir,
     PYTHONUTF8: '1',
     SCHEDULE_ENABLED: 'false',
     WEBUI_ENABLED: 'false',
+    BOT_ENABLED: 'false',
+    DINGTALK_STREAM_ENABLED: 'false',
+    FEISHU_STREAM_ENABLED: 'false',
   };
 
   const args = ['--serve-only', '--host', '127.0.0.1', '--port', String(port)];
@@ -206,6 +212,8 @@ function stopBackend() {
 
 async function createWindow() {
   initLogging();
+  const startupStartedAt = Date.now();
+
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -241,6 +249,7 @@ async function createWindow() {
 
   try {
     startBackend({ port, envFile: envPath, dbPath, logDir });
+    logLine('Backend process started, waiting for health check');
   } catch (error) {
     logLine(String(error));
     const errorUrl = `file://${loadingPath}?error=${encodeURIComponent(String(error))}`;
@@ -250,8 +259,10 @@ async function createWindow() {
 
   const healthUrl = `http://127.0.0.1:${port}/api/health`;
   try {
-    await waitForHealth(healthUrl);
+    const healthInfo = await waitForHealth(healthUrl);
+    logLine(`Backend ready in ${healthInfo.elapsedMs}ms (${healthInfo.attempts} probes)`);
     await mainWindow.loadURL(`http://127.0.0.1:${port}/`);
+    logLine(`Main UI loaded in ${Date.now() - startupStartedAt}ms`);
   } catch (error) {
     logLine(String(error));
     const errorUrl = `file://${loadingPath}?error=${encodeURIComponent(String(error))}`;
