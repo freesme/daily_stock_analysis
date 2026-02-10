@@ -26,14 +26,24 @@
       {
         "from": "../../.env.example",
         "to": ".env.example"
-      },
-      {
-        "from": "../../dist/backend/stock_analysis.exe",
-        "to": "backend/stock_analysis.exe"
-      }
-    ],
+      }    ],
     "win": {
-      "target": "portable"
+      "target": "portable",
+      "extraResources": [
+        {
+          "from": "../../dist/backend/stock_analysis.exe",
+          "to": "backend/stock_analysis.exe"
+        }
+      ]
+    },
+    "mac": {
+      "target": "dmg",
+      "extraResources": [
+        {
+          "from": "../../dist/backend/stock_analysis",
+          "to": "backend/stock_analysis"
+        }
+      ]
     }
   }
 }
