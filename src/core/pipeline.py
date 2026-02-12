@@ -14,6 +14,7 @@ A股自选股智能分析系统 - 核心分析流水线
 import logging
 import time
 import uuid
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import List, Dict, Any, Optional, Tuple
@@ -569,7 +570,7 @@ class StockAnalysisPipeline:
                             report_content = self.notifier.generate_single_stock_report(result)
                             logger.info(f"[{code}] 使用精简报告格式")
                         
-                        if self.notifier.send(report_content):
+                        if self.notifier.send(report_content, email_stock_codes=[code]):
                             logger.info(f"[{code}] 单股推送成功")
                         else:
                             logger.warning(f"[{code}] 单股推送失败")
@@ -738,6 +739,7 @@ class StockAnalysisPipeline:
 
                 # 其他渠道：发完整报告（避免自定义 Webhook 被 wechat 截断逻辑污染）
                 non_wechat_success = False
+                stock_email_groups = getattr(self.config, 'stock_email_groups', []) or []
                 for channel in channels:
                     if channel == NotificationChannel.WECHAT:
                         continue
@@ -746,7 +748,31 @@ class StockAnalysisPipeline:
                     elif channel == NotificationChannel.TELEGRAM:
                         non_wechat_success = self.notifier.send_to_telegram(report) or non_wechat_success
                     elif channel == NotificationChannel.EMAIL:
-                        non_wechat_success = self.notifier.send_to_email(report) or non_wechat_success
+                        if stock_email_groups:
+                            code_to_emails: Dict[str, Optional[List[str]]] = {}
+                            for r in results:
+                                if r.code not in code_to_emails:
+                                    emails = []
+                                    for stocks, emails_list in stock_email_groups:
+                                        if r.code in stocks:
+                                            emails.extend(emails_list)
+                                    code_to_emails[r.code] = list(dict.fromkeys(emails)) if emails else None
+                            emails_to_results: Dict[Optional[Tuple], List] = defaultdict(list)
+                            for r in results:
+                                recs = code_to_emails.get(r.code)
+                                key = tuple(recs) if recs else None
+                                emails_to_results[key].append(r)
+                            for key, group_results in emails_to_results.items():
+                                grp_report = self.notifier.generate_dashboard_report(group_results)
+                                if key is None:
+                                    non_wechat_success = self.notifier.send_to_email(grp_report) or non_wechat_success
+                                else:
+                                    non_wechat_success = (
+                                        self.notifier.send_to_email(grp_report, receivers=list(key))
+                                        or non_wechat_success
+                                    )
+                        else:
+                            non_wechat_success = self.notifier.send_to_email(report) or non_wechat_success
                     elif channel == NotificationChannel.CUSTOM:
                         non_wechat_success = self.notifier.send_to_custom(report) or non_wechat_success
                     elif channel == NotificationChannel.PUSHPLUS:

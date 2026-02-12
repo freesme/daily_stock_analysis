@@ -5,6 +5,13 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+- 📧 **股票分组发往不同邮箱** (Issue #268)
+  - 支持 `STOCK_GROUP_N` + `EMAIL_GROUP_N` 配置，不同股票组报告发送到对应邮箱
+  - 大盘复盘发往所有配置的邮箱
+
 ## [3.0.5] - 2026-02-08
 
 ### 修复
