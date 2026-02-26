@@ -72,7 +72,7 @@ npm run build
 ```bash
 pip install pyinstaller
 pip install -r requirements.txt
-pyinstaller --name stock_analysis --onefile --noconsole --add-data "static;static" main.py
+python -m PyInstaller --name stock_analysis --onefile --noconsole --add-data "static;static" --hidden-import=multipart --hidden-import=multipart.multipart main.py
 ```
 
 将生成的 exe 复制到 `dist/backend/`：

@@ -38,12 +38,25 @@ fi
 log "Installing backend dependencies..."
 "${PYTHON_BIN}" -m pip install -r "${ROOT_DIR}/requirements.txt"
 
+log "Checking python-multipart availability..."
+"${PYTHON_BIN}" -c "import multipart, multipart.multipart"
+
 if [[ -d "${ROOT_DIR}/dist/backend" ]]; then
   rm -rf "${ROOT_DIR}/dist/backend"
 fi
 mkdir -p "${ROOT_DIR}/dist/backend"
 
+if [[ -d "${ROOT_DIR}/dist/stock_analysis" ]]; then
+  rm -rf "${ROOT_DIR}/dist/stock_analysis"
+fi
+
+if [[ -d "${ROOT_DIR}/build/stock_analysis" ]]; then
+  rm -rf "${ROOT_DIR}/build/stock_analysis"
+fi
+
 hidden_imports=(
+  "multipart"
+  "multipart.multipart"
   "json_repair"
   "api"
   "api.app"
@@ -84,7 +97,7 @@ for module in "${hidden_imports[@]}"; do
 done
 
 pushd "${ROOT_DIR}" >/dev/null
-cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconsole --add-data "static:static")
+cmd=("${PYTHON_BIN}" -m PyInstaller --name stock_analysis --onedir --noconfirm --noconsole --add-data "static:static")
 cmd+=("${hidden_import_args[@]}" "main.py")
 
 echo "Running: ${cmd[*]}"
