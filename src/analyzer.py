@@ -604,7 +604,7 @@ class GeminiAnalyzer:
         openai_key_valid = (
             config.openai_api_key and
             not config.openai_api_key.startswith('your_') and
-            len(config.openai_api_key) > 10
+            len(config.openai_api_key) >= 8
         )
 
         if not openai_key_valid:

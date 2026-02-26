@@ -1194,9 +1194,23 @@ class DatabaseManager:
             
             if valid_numbers:
                 try:
-                    return float(valid_numbers[-1])
+                    return abs(float(valid_numbers[-1]))
                 except ValueError:
                     pass
+
+        # 兜底：无"元"字时（如 "102.10-103.00（MA5附近）"），
+        # 提取最后一个非 MA 前缀的数字
+        valid_numbers = []
+        for m in re.finditer(r"\d+(?:\.\d+)?", text):
+            start_idx = m.start()
+            if start_idx >= 2 and text[start_idx-2:start_idx].upper() == "MA":
+                continue
+            valid_numbers.append(m.group())
+        if valid_numbers:
+            try:
+                return float(valid_numbers[-1])
+            except ValueError:
+                pass
         return None
 
     def _extract_sniper_points(self, result: Any) -> Dict[str, Optional[float]]:

@@ -457,7 +457,12 @@ class AgentExecutor:
                     "role": "assistant",
                     "content": response.content,
                     "tool_calls": [
-                        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                        {
+                            "id": tc.id,
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                            **({"thought_signature": tc.thought_signature} if tc.thought_signature is not None else {}),
+                        }
                         for tc in response.tool_calls
                     ],
                 }
