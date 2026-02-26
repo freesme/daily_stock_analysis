@@ -8,6 +8,10 @@
 ## [Unreleased]
 
 ### 新增（#minor）
+- 🚀 **桌面端 CI 自动发布到 GitHub Releases**
+  - 新增 `.github/workflows/desktop-release.yml`
+  - 支持 Windows portable 与 macOS DMG 并行构建
+  - 支持 tag 触发自动发布，以及手动指定 `release_tag` 发布
 - 📈 **盘中实时技术面**（Issue #234）
   - 技术面数据（MA5/MA10/MA20、多头排列）使用盘中实时价格计算，而非昨日收盘
   - 盘中分析时，将实时价作为虚拟 K 线追加到历史序列，重算均线与趋势判断

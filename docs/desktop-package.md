@@ -57,6 +57,24 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
 3. PyInstaller 打包后端
 4. electron-builder 打包桌面应用
 
+## GitHub CI 自动打包并发布 Release
+
+仓库已支持通过 GitHub Actions 自动构建桌面端并上传到 GitHub Releases：
+
+- 工作流：`.github/workflows/desktop-release.yml`
+- 触发方式：
+  - 推送语义化 tag（如 `v3.2.12`）后自动触发
+  - 在 Actions 页面手动触发并指定 `release_tag`
+- 产物：
+  - Windows portable：`daily-stock-analysis-windows-portable-<tag>.exe`
+  - macOS DMG：`daily-stock-analysis-macos-<tag>.dmg`
+
+建议发布流程：
+
+1. 合并代码到 `main`
+2. 由自动打 tag 工作流生成版本（或手动创建 tag）
+3. `desktop-release` 工作流自动构建并把两个平台安装包附加到对应 GitHub Release
+
 ### 分步打包
 
 1) 构建 React UI

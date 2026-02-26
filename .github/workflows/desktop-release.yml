@@ -1,0 +1,159 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag in semver format, e.g. v3.2.12'
+        required: true
+        type: string
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release ref
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            git fetch --tags --force
+            git rev-parse "${RELEASE_TAG}" >/dev/null
+            git checkout "${RELEASE_TAG}"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/dsa-web/package-lock.json
+            apps/dsa-desktop/package-lock.json
+
+      - name: Build desktop package (Windows)
+        shell: pwsh
+        env:
+          DSA_SKIP_DEVMODE_CHECK: 'true'
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/build-all.ps1
+
+      - name: Prepare release artifact (Windows)
+        shell: pwsh
+        run: |
+          $portableExe = Get-ChildItem -Path 'apps/dsa-desktop/dist' -Filter '*.exe' `
+            | Where-Object { $_.Name -notmatch 'Setup' } `
+            | Sort-Object LastWriteTime -Descending `
+            | Select-Object -First 1
+          if (-not $portableExe) {
+            throw 'No portable .exe found under apps/dsa-desktop/dist.'
+          }
+          New-Item -ItemType Directory -Path 'dist/release-assets' -Force | Out-Null
+          $target = "dist/release-assets/daily-stock-analysis-windows-portable-$env:RELEASE_TAG.exe"
+          Copy-Item -Path $portableExe.FullName -Destination $target -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-${{ env.RELEASE_TAG }}
+          path: dist/release-assets/*.exe
+          if-no-files-found: error
+
+  build-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release ref
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            git fetch --tags --force
+            git rev-parse "${RELEASE_TAG}" >/dev/null
+            git checkout "${RELEASE_TAG}"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: |
+            apps/dsa-web/package-lock.json
+            apps/dsa-desktop/package-lock.json
+
+      - name: Build desktop package (macOS)
+        run: bash scripts/build-all-macos.sh
+
+      - name: Prepare release artifact (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg_file="$(ls -t apps/dsa-desktop/dist/*.dmg | head -n 1)"
+          test -n "$dmg_file"
+          mkdir -p dist/release-assets
+          cp "$dmg_file" "dist/release-assets/daily-stock-analysis-macos-${RELEASE_TAG}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-${{ env.RELEASE_TAG }}
+          path: dist/release-assets/*.dmg
+          if-no-files-found: error
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-macos]
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+    steps:
+      - name: Validate release tag
+        run: |
+          [[ "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: dist/release-assets
+          merge-multiple: true
+
+      - name: Show release assets
+        run: ls -lah dist/release-assets
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          files: dist/release-assets/*
+          fail_on_unmatched_files: true

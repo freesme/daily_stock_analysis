@@ -11,7 +11,8 @@ if (Test-Path $devModeKey) {
   }
 }
 
-if (($allowDev -ne 1) -and ($allowTrusted -ne 1)) {
+$skipDevModeCheck = ($env:DSA_SKIP_DEVMODE_CHECK -eq 'true') -or ($env:CI -eq 'true')
+if (-not $skipDevModeCheck -and ($allowDev -ne 1) -and ($allowTrusted -ne 1)) {
   Write-Host 'Developer Mode is disabled. Enable it to allow symlink creation for electron-builder.'
   Write-Host 'Windows Settings -> Privacy & security -> For developers -> Developer Mode'
   throw 'Developer Mode required for electron-builder cache extraction.'
