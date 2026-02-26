@@ -67,18 +67,34 @@ jobs:
           if (-not $portableExe) {
             throw 'No portable .exe found under apps/dsa-desktop/dist.'
           }
+          $winUnpacked = 'apps/dsa-desktop/dist/win-unpacked'
+          if (-not (Test-Path $winUnpacked)) {
+            throw 'No win-unpacked directory found under apps/dsa-desktop/dist.'
+          }
           New-Item -ItemType Directory -Path 'dist/release-assets' -Force | Out-Null
-          $target = "dist/release-assets/daily-stock-analysis-windows-portable-$env:RELEASE_TAG.exe"
-          Copy-Item -Path $portableExe.FullName -Destination $target -Force
+          $exeTarget = "dist/release-assets/daily-stock-analysis-windows-installer-$env:RELEASE_TAG.exe"
+          $zipTarget = "dist/release-assets/daily-stock-analysis-windows-noinstall-$env:RELEASE_TAG.zip"
+          Copy-Item -Path $portableExe.FullName -Destination $exeTarget -Force
+          Compress-Archive -Path $winUnpacked -DestinationPath $zipTarget -CompressionLevel Optimal -Force
 
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-windows-${{ env.RELEASE_TAG }}
-          path: dist/release-assets/*.exe
+          path: |
+            dist/release-assets/*.exe
+            dist/release-assets/*.zip
           if-no-files-found: error
 
   build-macos:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-13
+          - arch: arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     env:
@@ -112,20 +128,25 @@ jobs:
             apps/dsa-desktop/package-lock.json
 
       - name: Build desktop package (macOS)
+        env:
+          DSA_MAC_ARCH: ${{ matrix.arch }}
         run: bash scripts/build-all-macos.sh
 
       - name: Prepare release artifact (macOS)
         shell: bash
         run: |
           set -euo pipefail
-          dmg_file="$(ls -t apps/dsa-desktop/dist/*.dmg | head -n 1)"
+          dmg_file="$(ls -t apps/dsa-desktop/dist/*${{ matrix.arch }}*.dmg 2>/dev/null | head -n 1 || true)"
+          if [[ -z "${dmg_file}" ]]; then
+            dmg_file="$(ls -t apps/dsa-desktop/dist/*.dmg | head -n 1)"
+          fi
           test -n "$dmg_file"
           mkdir -p dist/release-assets
-          cp "$dmg_file" "dist/release-assets/daily-stock-analysis-macos-${RELEASE_TAG}.dmg"
+          cp "$dmg_file" "dist/release-assets/daily-stock-analysis-macos-${{ matrix.arch }}-${RELEASE_TAG}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-macos-${{ env.RELEASE_TAG }}
+          name: desktop-macos-${{ matrix.arch }}-${{ env.RELEASE_TAG }}
           path: dist/release-assets/*.dmg
           if-no-files-found: error
 

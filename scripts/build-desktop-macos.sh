@@ -25,7 +25,22 @@ if compgen -G "dist/mac*" >/dev/null; then
   rm -rf dist/mac*
 fi
 
-npx electron-builder --mac dmg
+MAC_ARCH="${DSA_MAC_ARCH:-}"
+ARCH_ARGS=()
+if [[ -n "${MAC_ARCH}" ]]; then
+  case "${MAC_ARCH}" in
+    x64|arm64)
+      ARCH_ARGS+=("--${MAC_ARCH}")
+      ;;
+    *)
+      echo "Unsupported DSA_MAC_ARCH: ${MAC_ARCH}. Use x64 or arm64."
+      exit 1
+      ;;
+  esac
+fi
+
+echo "Building macOS target arch: ${MAC_ARCH:-default}"
+npx electron-builder --mac dmg "${ARCH_ARGS[@]}"
 popd >/dev/null
 
 echo "Desktop build completed."

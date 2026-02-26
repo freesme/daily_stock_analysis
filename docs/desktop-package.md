@@ -66,8 +66,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
   - 推送语义化 tag（如 `v3.2.12`）后自动触发
   - 在 Actions 页面手动触发并指定 `release_tag`
 - 产物：
-  - Windows portable：`daily-stock-analysis-windows-portable-<tag>.exe`
-  - macOS DMG：`daily-stock-analysis-macos-<tag>.dmg`
+  - Windows 安装包：`daily-stock-analysis-windows-installer-<tag>.exe`
+  - Windows 免安装包：`daily-stock-analysis-windows-noinstall-<tag>.zip`
+  - macOS Intel：`daily-stock-analysis-macos-x64-<tag>.dmg`
+  - macOS Apple Silicon：`daily-stock-analysis-macos-arm64-<tag>.dmg`
 
 建议发布流程：
 
