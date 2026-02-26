@@ -60,12 +60,12 @@ jobs:
       - name: Prepare release artifact (Windows)
         shell: pwsh
         run: |
-          $portableExe = Get-ChildItem -Path 'apps/dsa-desktop/dist' -Filter '*.exe' `
-            | Where-Object { $_.Name -notmatch 'Setup' } `
+          $installerExe = Get-ChildItem -Path 'apps/dsa-desktop/dist' -Filter '*.exe' `
+            | Where-Object { $_.Name -match 'Setup' } `
             | Sort-Object LastWriteTime -Descending `
             | Select-Object -First 1
-          if (-not $portableExe) {
-            throw 'No portable .exe found under apps/dsa-desktop/dist.'
+          if (-not $installerExe) {
+            throw 'No NSIS setup .exe found under apps/dsa-desktop/dist.'
           }
           $winUnpacked = 'apps/dsa-desktop/dist/win-unpacked'
           if (-not (Test-Path $winUnpacked)) {
@@ -74,7 +74,7 @@ jobs:
           New-Item -ItemType Directory -Path 'dist/release-assets' -Force | Out-Null
           $exeTarget = "dist/release-assets/daily-stock-analysis-windows-installer-$env:RELEASE_TAG.exe"
           $zipTarget = "dist/release-assets/daily-stock-analysis-windows-noinstall-$env:RELEASE_TAG.zip"
-          Copy-Item -Path $portableExe.FullName -Destination $exeTarget -Force
+          Copy-Item -Path $installerExe.FullName -Destination $exeTarget -Force
           Compress-Archive -Path $winUnpacked -DestinationPath $zipTarget -CompressionLevel Optimal -Force
 
       - uses: actions/upload-artifact@v4

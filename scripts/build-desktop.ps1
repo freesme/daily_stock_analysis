@@ -53,7 +53,7 @@ if (!(Test-Path $appBuilderPath)) {
   npm install
 }
 
-npx electron-builder --win portable
+npx electron-builder --win nsis
 if ($LASTEXITCODE -ne 0) {
   throw 'Electron build failed.'
 }
