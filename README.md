@@ -173,6 +173,7 @@ python main.py
 
 > Docker 部署、定时任务配置请参考 [完整指南](docs/full-guide.md)
 > 桌面客户端打包请参考 [桌面端打包说明](docs/desktop-package.md)
+> 支持通过 GitHub Actions 在发布 tag 后自动构建 Windows/macOS/Linux 桌面包并上传到 GitHub Releases。
 
 ## 📱 推送效果
 

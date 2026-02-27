@@ -6,7 +6,7 @@
 
 - React UI（Vite 构建）由本地 FastAPI 服务托管
 - Electron 启动时自动拉起后端服务，等待 `/api/health` 就绪后加载 UI
-- 用户配置文件 `.env` 和数据库放在 exe 同级目录（便携模式）
+- 用户配置文件 `.env` 和数据库放在应用目录中（安装版与免安装版均适用）
 
 ## 本地开发
 
@@ -70,12 +70,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
   - Windows 免安装包：`daily-stock-analysis-windows-noinstall-<tag>.zip`
   - macOS Intel：`daily-stock-analysis-macos-x64-<tag>.dmg`
   - macOS Apple Silicon：`daily-stock-analysis-macos-arm64-<tag>.dmg`
+  - Linux x64：`daily-stock-analysis-linux-x64-<tag>.AppImage`
 
 建议发布流程：
 
 1. 合并代码到 `main`
 2. 由自动打 tag 工作流生成版本（或手动创建 tag）
-3. `desktop-release` 工作流自动构建并把两个平台安装包附加到对应 GitHub Release
+3. `desktop-release` 工作流自动构建并把多平台安装包附加到对应 GitHub Release
 
 ### 分步打包
 
@@ -112,9 +113,25 @@ npm run build
 
 打包产物位于 `apps/dsa-desktop/dist/`。
 
+## 打包 (Linux)
+
+### 前置条件
+
+- Node.js 18+
+- Python 3.10+
+- Linux 桌面环境（用于运行 Electron 打包链路）
+
+### 一键打包
+
+```bash
+bash scripts/build-all-linux.sh
+```
+
+默认生成 Linux x64 的 `AppImage` 包，产物位于 `apps/dsa-desktop/dist/`。
+
 ## 目录结构
 
-打包后用户拿到的目录结构（便携模式）：
+免安装版（`win-unpacked`）目录结构：
 
 ```
 win-unpacked/
@@ -157,8 +174,8 @@ PyInstaller 打包时缺少模块，需要在 `scripts/build-backend.ps1` 中增
 
 ## 分发给用户
 
-将 `apps/dsa-desktop/dist/win-unpacked/` 整个文件夹打包发给用户即可。用户只需：
+Windows 建议优先分发安装包（`*.Setup*.exe`），也可分发免安装版 zip：
 
-1. 解压文件夹
-2. 编辑 `.env` 配置 API Key 和股票列表
-3. 双击 `Daily Stock Analysis.exe` 启动
+1. 安装版：运行 `daily-stock-analysis-windows-installer-<tag>.exe` 按向导安装
+2. 免安装版：解压 `daily-stock-analysis-windows-noinstall-<tag>.zip` 后双击 `Daily Stock Analysis.exe`
+3. 首次运行后编辑 `.env` 配置 API Key 和股票列表

@@ -10,7 +10,7 @@
 ### 新增（#minor）
 - 🚀 **桌面端 CI 自动发布到 GitHub Releases**
   - 新增 `.github/workflows/desktop-release.yml`
-  - 支持 Windows 安装包（exe）+ 免安装包（zip）与 macOS x64/arm64 DMG 并行构建
+  - 支持 Windows 安装包（exe）+ 免安装包（zip）、macOS x64/arm64 DMG、Linux x64 AppImage 并行构建
   - 支持 tag 触发自动发布，以及手动指定 `release_tag` 发布
 - 📈 **盘中实时技术面**（Issue #234）
   - 技术面数据（MA5/MA10/MA20、多头排列）使用盘中实时价格计算，而非昨日收盘
@@ -45,6 +45,9 @@
   - OpenAI 兼容 API Key 长度校验放宽为 `>= 8`，支持 LiteLLM 本地开发常用短 Key
 
 ### 修复（#patch）
+- 🐛 **Windows 桌面包默认目标改为安装版（NSIS）**
+  - 原行为：产物为 portable 直启 exe
+  - 修复后：默认生成 NSIS 安装包（Setup exe），并继续提供免安装 zip 产物
 - 🐛 **修复桌面端打包后 FastAPI 缺少 `python-multipart`**
   - 现象：桌面客户端启动时报错 `Form data requires "python-multipart" to be installed`
   - 根因：`python-multipart` 由 FastAPI 在运行时检查，且 Windows 打包脚本中 `pip` 与 `pyinstaller` 可能来自不同 Python 环境，导致 `multipart` 未被收录
