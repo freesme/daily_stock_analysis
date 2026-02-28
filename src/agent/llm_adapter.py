@@ -6,6 +6,7 @@ Normalizes function-calling / tool-use across Gemini, OpenAI, and Anthropic
 into a unified interface consumed by the AgentExecutor.
 """
 
+import base64
 import json
 import logging
 import time
@@ -28,6 +29,7 @@ class ToolCall:
     id: str
     name: str
     arguments: Dict[str, Any]
+    thought_signature: Optional[str] = None
 
 
 @dataclass
@@ -104,7 +106,7 @@ class LLMToolAdapter:
         config = config or get_config()
 
         # Provider clients (lazy-initialized)
-        self._gemini_model = None
+        self._gemini_client = None
         self._anthropic_client = None
         self._openai_client = None
 
@@ -127,11 +129,10 @@ class LLMToolAdapter:
         gemini_key = config.gemini_api_key
         if gemini_key and not gemini_key.startswith("your_") and len(gemini_key) > 10:
             try:
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_key)
-                model_name = config.gemini_model or "gemini-2.5-flash"
-                self._gemini_model = genai.GenerativeModel(model_name=model_name)
+                from google import genai as google_genai
+                self._gemini_client = google_genai.Client(api_key=gemini_key)
                 self._gemini_available = True
+                model_name = config.gemini_model or "gemini-2.5-flash"
                 logger.info(f"Agent LLM: Gemini initialized (model={model_name})")
             except Exception as e:
                 logger.warning(f"Agent LLM: Gemini init failed: {e}")
@@ -149,7 +150,7 @@ class LLMToolAdapter:
 
         # OpenAI
         openai_key = config.openai_api_key
-        if openai_key and not openai_key.startswith("your_") and len(openai_key) > 10:
+        if openai_key and not openai_key.startswith("your_") and len(openai_key) >= 8:
             try:
                 from openai import OpenAI
                 client_kwargs = {"api_key": openai_key}
@@ -243,83 +244,84 @@ class LLMToolAdapter:
         messages: List[Dict[str, Any]],
         tools: List[dict],
     ) -> LLMResponse:
-        """Call Gemini with function-calling support."""
-        import google.generativeai as genai
-        from google.generativeai.types import content_types
+        """Call Gemini with function-calling support using google-genai SDK.
+
+        Uses the new google-genai SDK (google.genai) which supports thought_signature
+        at the Part level, required for Gemini 3 multi-turn tool calls.
+        """
+        from google.genai import types as genai_types
 
         config = self._config
         model_name = config.gemini_model or "gemini-2.5-flash"
 
-        # Extract system instruction
+        # Build contents and extract system instruction
         system_instruction = None
-        chat_messages = []
+        contents = []
         for msg in messages:
             if msg["role"] == "system":
                 system_instruction = msg["content"]
             elif msg["role"] == "user":
-                chat_messages.append({"role": "user", "parts": [msg["content"]]})
+                contents.append(genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part.from_text(text=msg["content"])],
+                ))
             elif msg["role"] == "assistant":
                 parts = []
                 if msg.get("content"):
-                    parts.append(msg["content"])
-                # Handle assistant tool_calls in history
+                    parts.append(genai_types.Part.from_text(text=msg["content"]))
                 if msg.get("tool_calls"):
                     for tc in msg["tool_calls"]:
-                        parts.append(genai.protos.Part(
-                            function_call=genai.protos.FunctionCall(
+                        sig_str = tc.get("thought_signature")
+                        sig_bytes = None
+                        if sig_str and isinstance(sig_str, str):
+                            try:
+                                sig_bytes = base64.b64decode(sig_str) or None
+                            except Exception:
+                                logger.debug("thought_signature base64 decode failed for '%s'; omitting", tc["name"])
+                        if sig_bytes:
+                            # Gemini 3 requires thought_signature (bytes) at Part level
+                            parts.append(genai_types.Part(
+                                function_call=genai_types.FunctionCall(
+                                    name=tc["name"],
+                                    args=tc["arguments"],
+                                ),
+                                thought_signature=sig_bytes,
+                            ))
+                        else:
+                            parts.append(genai_types.Part.from_function_call(
                                 name=tc["name"],
-                                args=tc["arguments"]
-                            )
-                        ))
-                chat_messages.append({"role": "model", "parts": parts})
+                                args=tc["arguments"],
+                            ))
+                if parts:
+                    contents.append(genai_types.Content(role="model", parts=parts))
             elif msg["role"] == "tool":
-                # Tool result message
-                chat_messages.append({
-                    "role": "user",
-                    "parts": [genai.protos.Part(
-                        function_response=genai.protos.FunctionResponse(
-                            name=msg["name"],
-                            response={"result": msg["content"]}
-                        )
-                    )]
-                })
+                contents.append(genai_types.Content(
+                    role="tool",
+                    parts=[genai_types.Part.from_function_response(
+                        name=msg["name"],
+                        response={"result": msg["content"]},
+                    )],
+                ))
 
-        # Build tool declarations
-        gemini_tools = None
+        # Build generation config (tools + system instruction + temperature)
+        gen_config_kwargs: Dict[str, Any] = {"temperature": config.gemini_temperature}
         if tools:
-            function_declarations = []
-            for t in tools:
-                function_declarations.append(
-                    genai.protos.FunctionDeclaration(
-                        name=t["name"],
-                        description=t["description"],
-                        parameters=t.get("parameters")
-                    )
+            function_declarations = [
+                genai_types.FunctionDeclaration(
+                    name=t["name"],
+                    description=t["description"],
+                    parameters_json_schema=t.get("parameters"),
                 )
-            gemini_tools = [genai.protos.Tool(function_declarations=function_declarations)]
+                for t in tools
+            ]
+            gen_config_kwargs["tools"] = [genai_types.Tool(function_declarations=function_declarations)]
+        if system_instruction:
+            gen_config_kwargs["system_instruction"] = system_instruction
 
-        # Create model with system instruction
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=system_instruction,
-            tools=gemini_tools,
-        )
-
-        # Build contents
-        contents = []
-        for cm in chat_messages:
-            contents.append(genai.protos.Content(
-                role=cm["role"],
-                parts=[genai.protos.Part(text=p) if isinstance(p, str) else p for p in cm["parts"]]
-            ))
-
-        generation_config = genai.types.GenerationConfig(
-            temperature=config.gemini_temperature,
-        )
-
-        response = model.generate_content(
+        response = self._gemini_client.models.generate_content(
+            model=model_name,
             contents=contents,
-            generation_config=generation_config,
+            config=genai_types.GenerateContentConfig(**gen_config_kwargs),
         )
 
         # Parse response
@@ -328,24 +330,28 @@ class LLMToolAdapter:
 
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
-                if hasattr(part, 'function_call') and part.function_call.name:
+                if part.function_call:
                     fc = part.function_call
                     args = dict(fc.args) if fc.args else {}
+                    # Gemini 3 returns thought_signature as bytes; base64-encode for JSON-safe transport
+                    sig_bytes = part.thought_signature
+                    sig_str = base64.b64encode(sig_bytes).decode("ascii") if sig_bytes else None
                     tool_calls.append(ToolCall(
                         id=str(uuid.uuid4())[:8],
                         name=fc.name,
                         arguments=args,
+                        thought_signature=sig_str,
                     ))
-                elif hasattr(part, 'text') and part.text:
+                elif part.text:
                     text_content = (text_content or "") + part.text
 
         # Extract usage
         usage = {}
-        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
             usage = {
-                "prompt_tokens": getattr(response.usage_metadata, 'prompt_token_count', 0),
-                "completion_tokens": getattr(response.usage_metadata, 'candidates_token_count', 0),
-                "total_tokens": getattr(response.usage_metadata, 'total_token_count', 0),
+                "prompt_tokens": getattr(response.usage_metadata, "prompt_token_count", 0),
+                "completion_tokens": getattr(response.usage_metadata, "candidates_token_count", 0),
+                "total_tokens": getattr(response.usage_metadata, "total_token_count", 0),
             }
 
         return LLMResponse(
@@ -381,14 +387,18 @@ class LLMToolAdapter:
                 # Reconstruct assistant message with tool_calls
                 openai_tc = []
                 for tc in msg["tool_calls"]:
-                    openai_tc.append({
+                    tc_dict = {
                         "id": tc.get("id", str(uuid.uuid4())[:8]),
                         "type": "function",
                         "function": {
                             "name": tc["name"],
                             "arguments": json.dumps(tc["arguments"]),
                         }
-                    })
+                    }
+                    sig = tc.get("thought_signature")
+                    if sig is not None:
+                        tc_dict["provider_specific_fields"] = {"thought_signature": sig}
+                    openai_tc.append(tc_dict)
                 openai_msg = {
                     "role": "assistant",
                     "content": msg.get("content"),
@@ -417,7 +427,13 @@ class LLMToolAdapter:
 
         response = self._openai_client.chat.completions.create(**call_kwargs)
 
-        # Parse response
+        # Parse response — guard against None/empty choices (non-standard API response)
+        if not response.choices:
+            raise ValueError(
+                f"OpenAI-compatible API returned empty choices. "
+                f"Model: {model_name}, finish_reason: N/A. "
+                f"This may indicate the provider rejected the request or returned a malformed response."
+            )
         choice = response.choices[0]
         tool_calls = []
         text_content = choice.message.content
@@ -432,10 +448,21 @@ class LLMToolAdapter:
                         args = json.loads(tc.function.arguments)
                     except json.JSONDecodeError:
                         args = {"raw": tc.function.arguments}
+                # Extract thought_signature: stored in __pydantic_extra__ as provider_specific_fields
+                psf = getattr(tc, 'provider_specific_fields', None)
+                if psf is not None:
+                    sig = psf.get('thought_signature') if isinstance(psf, dict) else getattr(psf, 'thought_signature', None)
+                else:
+                    func_psf = getattr(tc.function, 'provider_specific_fields', None)
+                    if func_psf is not None:
+                        sig = func_psf.get('thought_signature') if isinstance(func_psf, dict) else getattr(func_psf, 'thought_signature', None)
+                    else:
+                        sig = getattr(tc, 'thought_signature', None)
                 tool_calls.append(ToolCall(
                     id=tc.id,
                     name=tc.function.name,
                     arguments=args,
+                    thought_signature=sig,
                 ))
 
         usage = {}

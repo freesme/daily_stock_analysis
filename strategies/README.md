@@ -26,7 +26,7 @@ name: my_strategy
 display_name: 我的策略
 description: 简短描述策略适用的市场场景
 
-# 策略分类：trend（趋势）、pattern（形态）、reversal（反转）
+# 策略分类：trend（趋势）、pattern（形态）、reversal（反转）、framework（框架）
 category: trend
 
 # 关联的核心交易理念编号（1-7），可选

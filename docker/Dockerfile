@@ -47,6 +47,7 @@ COPY data_provider/ ./data_provider/
 COPY bot/ ./bot/
 COPY patch/ ./patch/
 COPY src/ ./src/
+COPY strategies/ ./strategies/
 COPY --from=web-builder /app/static ./static/
 
 # 创建数据目录

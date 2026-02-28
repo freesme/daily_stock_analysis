@@ -40,7 +40,7 @@ except ImportError:
 
 from src.config import get_config
 from src.analyzer import AnalysisResult
-from src.formatters import format_feishu_markdown, markdown_to_html_document
+from src.formatters import format_feishu_markdown, markdown_to_html_document, chunk_content_by_max_words
 from bot.models import BotMessage
 
 logger = logging.getLogger(__name__)
@@ -201,6 +201,7 @@ class NotificationService:
         # 消息长度限制（字节）
         self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
         self._wechat_max_bytes = getattr(config, 'wechat_max_bytes', 4000)
+        self._discord_max_words = getattr(config, 'discord_max_words', 2000)
 
         # Markdown 转图片（Issue #289）
         self._markdown_to_image_channels = set(
@@ -3028,14 +3029,21 @@ class NotificationService:
         Returns:
             是否发送成功
         """
+        # 分割内容，避免单条消息超过 Discord 限制
+        try:
+            chunks = chunk_content_by_max_words(content, self._discord_max_words)
+        except ValueError as e:
+            logger.error(f"分割 Discord 消息失败: {e}, 尝试整段发送。")
+            chunks = [content]
+
         # 优先使用 Webhook（配置简单，权限低）
         if self._discord_config['webhook_url']:
-            return self._send_discord_webhook(content)
-        
+            return all(self._send_discord_webhook(chunk) for chunk in chunks)
+
         # 其次使用 Bot API（权限高，需要 channel_id）
         if self._discord_config['bot_token'] and self._discord_config['channel_id']:
-            return self._send_discord_bot(content)
-        
+            return all(self._send_discord_bot(chunk) for chunk in chunks)
+
         logger.warning("Discord 配置不完整，跳过推送")
         return False
 

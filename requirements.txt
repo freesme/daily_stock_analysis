@@ -26,7 +26,8 @@ numpy>=1.24.0               # 数值计算
 json-repair>=0.55.1         # JSON 修复
 
 # AI 分析
-google-generativeai>=0.8.0  # Gemini API
+google-generativeai>=0.8.0  # Gemini API (used by analyzer.py and image_stock_extractor.py)
+google-genai>=1.0.0          # Gemini API new SDK (used by llm_adapter.py for agent tool-calling)
 anthropic>=0.18.0           # Anthropic Claude API（可选）
 openai>=1.0.0               # OpenAI 兼容 API（可选，支持 DeepSeek/通义千问等）
 

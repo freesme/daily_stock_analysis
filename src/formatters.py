@@ -14,6 +14,75 @@ from typing import List, Callable
 import markdown2
 
 
+TRUNCATION_SUFFIX = "\n\n...(本段内容过长已截断)"
+MIN_MAX_WORDS = 10
+
+# Unicode code point ranges for emoji (symbols that count as 2 for effective length).
+_EMOJI_RANGES = [
+    (0x2600, 0x26FF),   # Misc symbols
+    (0x2700, 0x27BF),   # Dingbats
+    (0x1F300, 0x1F5FF), # Misc Symbols and Pictographs
+    (0x1F600, 0x1F64F), # Emoticons
+    (0x1F650, 0x1F67F),
+    (0x1F680, 0x1F6FF), # Transport and Map
+    (0x1F900, 0x1F9FF), # Supplemental Symbols and Pictographs
+    (0x1F1E0, 0x1F1FF), # Flags
+]
+
+
+def _is_emoji(c: str) -> bool:
+    """判断字符是否为 emoji
+    
+    Args:
+        c: 字符
+        
+    Returns:
+        True 如果字符为 emoji，False 否则
+    """
+    if len(c) != 1:
+        return False
+    cp = ord(c)
+    return any(lo <= cp <= hi for lo, hi in _EMOJI_RANGES)
+
+
+def _effective_len(s: str, emoji_len: int = 2) -> int:
+    """
+    计算字符串的有效长度
+    
+    Args:
+        s: 字符串
+        emoji_len: 每个 emoji 的长度，默认为 2
+        
+    Returns:
+        s 的有效长度
+    """
+    n = len(s)
+    n += sum(emoji_len - 1 for c in s if _is_emoji(c))
+    return n
+
+
+def _slice_at_effective_len(s: str, effective_len: int, emoji_len: int = 2) -> tuple[str, str]:
+    """
+    按有效长度分割字符串
+    
+    Args:
+        s: 字符串
+        effective_len: 有效长度
+        emoji_len: 每个 emoji 的长度，默认为 2
+        
+    Returns:
+        分割后的前、后部分字符串
+    """
+    if _effective_len(s, emoji_len) <= effective_len:
+        return s, ""
+    eff = 0
+    for i, c in enumerate(s):
+        eff += emoji_len if _is_emoji(c) else 1
+        if eff > effective_len:
+            return s[:i], s[i:]
+    return s, ""
+
+
 def markdown_to_html_document(markdown_text: str) -> str:
     """
     Convert Markdown to a complete HTML document (for email, md2img, etc.).
@@ -400,3 +469,154 @@ def chunk_feishu_content(content: str, max_bytes: int, send_func: Callable[[str]
             time.sleep(1)
     
     return success_count == total_chunks
+
+def _chunk_by_separators(content: str) -> tuple[list[str], str]:
+    """
+    通过分割线等特殊字符将消息内容分割为多个区块
+    
+    Args:
+        content: 完整消息内容
+        
+    Returns:
+        sections: 分割后的区块列表
+        separator: 区块之间的分隔符，None 表示无法分割
+    """
+    # 智能分割：优先按 "---" 分隔（股票之间的分隔线）
+    # 其次尝试各级标题分割
+    if "\n---\n" in content:
+        sections = content.split("\n---\n")
+        separator = "\n---\n"
+    elif "\n# " in content:
+        # 按 # 分割 (兼容一级标题)
+        parts = content.split("\n## ")
+        sections = [parts[0]] + [f"## {p}" for p in parts[1:]]
+        separator = "\n"
+    elif "\n## " in content:
+        # 按 ## 分割 (兼容二级标题)
+        parts = content.split("\n## ")
+        sections = [parts[0]] + [f"## {p}" for p in parts[1:]]
+        separator = "\n"
+    elif "\n### " in content:
+        # 按 ### 分割
+        parts = content.split("\n### ")
+        sections = [parts[0]] + [f"### {p}" for p in parts[1:]]
+        separator = "\n"
+    elif "\n**" in content:
+        # 按 ** 加粗标题分割 (兼容 AI 未输出标准 Markdown 标题的情况)
+        parts = content.split("\n**")
+        sections = [parts[0]] + [f"**{p}" for p in parts[1:]]
+        separator = "\n"
+    else:
+        return [content], ""
+    return sections, separator
+
+def _chunk_by_max_words(content: str, max_words: int, emoji_len: int = 2) -> list[str]:
+    """
+    按字数分割消息内容
+    
+    Args:
+        content: 完整消息内容
+        max_words: 单条消息最大字数
+        emoji_len: 每个 emoji 的长度，默认为 2
+        
+    Returns:
+        分割后的区块列表
+    """
+    if _effective_len(content, emoji_len) <= max_words:
+        return [content]
+    if max_words < MIN_MAX_WORDS:
+        raise ValueError(
+            f"max_words={max_words} < {MIN_MAX_WORDS}, 可能陷入无限递归。"
+        )
+
+    sections = []
+    suffix = TRUNCATION_SUFFIX
+    effective_max_words = max_words - len(suffix)  # 预留后缀，避免边界超限
+    if effective_max_words <= 0:
+        effective_max_words = max_words
+        suffix = ""
+
+    while True:
+        chunk, content = _slice_at_effective_len(content, effective_max_words, emoji_len)
+        sections.append(chunk + suffix)
+        effective_len = _effective_len(content, emoji_len)
+        if effective_len <= effective_max_words:
+            if effective_len > 0:
+                sections.append(content)
+            break
+    return sections
+
+def chunk_content_by_max_words(content: str, max_words: int, emoji_len: int = 2) -> list[str]:
+    """
+    按字数智能分割消息内容
+    
+    Args:
+        content: 完整消息内容
+        max_words: 单条消息最大字数
+        emoji_len: 每个 emoji 的长度，默认为 2
+        
+    Returns:
+        分割后的区块列表
+    """
+    if max_words < MIN_MAX_WORDS:
+        # Safe guard，避免无限递归
+        # 理论上，max_words在每次递归中可以减小到无限小，但实际中不太可能发生，
+        # 除非每次_chunk_by_separators都能成功返回分隔符，且max_words初始值太小。
+        raise ValueError(f"max_words={max_words} < {MIN_MAX_WORDS}, 可能陷入无限递归。")
+    
+    if _effective_len(content, emoji_len) <= max_words:
+        return [content]
+
+    sections, separator = _chunk_by_separators(content)
+    if separator == "":
+        # 无法智能分割，则强制按字数分割
+        return _chunk_by_max_words(content, max_words, emoji_len)
+
+    chunks = []
+    current_chunk = []
+    current_word_len = 0
+    separator_len = len(separator) if separator else 0
+    effective_max_words = max_words - separator_len # 预留分割符长度，避免边界超限
+
+    for section in sections:
+        section = section + separator
+        section_word_len = _effective_len(section, emoji_len)
+
+        # 如果单个 section 就超长，需要强制截断
+        if section_word_len > max_words:
+            # 先保存当前积累的内容
+            if current_chunk:
+                chunks.append("".join(current_chunk))
+                current_chunk = []
+                current_word_len = 0
+
+            # 强制截断这个超长 section
+            section_chunks = chunk_content_by_max_words(
+                section[:-separator_len], effective_max_words, emoji_len
+                )
+            section_chunks[-1] = section_chunks[-1] + separator
+            chunks.extend(section_chunks)
+            continue
+
+        # 检查加入后是否超长
+        if current_word_len + section_word_len > max_words:
+            # 保存当前块，开始新块
+            if current_chunk:
+                chunks.append("".join(current_chunk))
+            current_chunk = [section]
+            current_word_len = section_word_len
+        else:
+            current_chunk.append(section)
+            current_word_len += section_word_len
+
+    # 添加最后一块
+    if current_chunk:
+        chunks.append("".join(current_chunk))
+
+    # 移除最后一个块的分割符
+    if (chunks and
+        len(chunks[-1]) > separator_len and
+        chunks[-1][-separator_len:] == separator
+        ):
+        chunks[-1] = chunks[-1][:-separator_len]
+    return chunks

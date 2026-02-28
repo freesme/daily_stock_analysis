@@ -36,6 +36,7 @@ from sqlalchemy import (
     Text,
     select,
     and_,
+    delete,
     desc,
 )
 from sqlalchemy.orm import (
@@ -887,6 +888,27 @@ class DatabaseManager:
                 select(AnalysisHistory).where(AnalysisHistory.id == record_id)
             ).scalars().first()
             return result
+
+    def get_latest_analysis_by_query_id(self, query_id: str) -> Optional[AnalysisHistory]:
+        """
+        根据 query_id 查询最新一条分析历史记录
+
+        query_id 在批量分析时可能重复，故返回最近创建的一条。
+
+        Args:
+            query_id: 分析记录关联的 query_id
+
+        Returns:
+            AnalysisHistory 对象，不存在返回 None
+        """
+        with self.get_session() as session:
+            result = session.execute(
+                select(AnalysisHistory)
+                .where(AnalysisHistory.query_id == query_id)
+                .order_by(desc(AnalysisHistory.created_at))
+                .limit(1)
+            ).scalars().first()
+            return result
     
     def get_data_range(
         self, 
@@ -1156,15 +1178,20 @@ class DatabaseManager:
     @staticmethod
     def _parse_sniper_value(value: Any) -> Optional[float]:
         """
-        解析狙击点位数值
+        Parse a sniper point value from various formats to float.
+
+        Handles: numeric types, plain number strings, Chinese price formats
+        like "18.50元", range formats like "18.50-19.00", and text with
+        embedded numbers while filtering out MA indicators.
         """
         if value is None:
             return None
         if isinstance(value, (int, float)):
-            return float(value)
+            v = float(value)
+            return v if v > 0 else None
 
-        text = str(value).replace(',', '').strip()
-        if not text:
+        text = str(value).replace(',', '').replace('，', '').strip()
+        if not text or text == '-' or text == '—' or text == 'N/A':
             return None
 
         # 尝试直接解析纯数字字符串
@@ -1194,18 +1221,51 @@ class DatabaseManager:
             
             if valid_numbers:
                 try:
-                    return float(valid_numbers[-1])
+                    return abs(float(valid_numbers[-1]))
                 except ValueError:
                     pass
+
+        # 兜底：无"元"字时（如 "102.10-103.00（MA5附近）"），
+        # 提取最后一个非 MA 前缀的数字
+        valid_numbers = []
+        for m in re.finditer(r"\d+(?:\.\d+)?", text):
+            start_idx = m.start()
+            if start_idx >= 2 and text[start_idx-2:start_idx].upper() == "MA":
+                continue
+            valid_numbers.append(m.group())
+        if valid_numbers:
+            try:
+                return float(valid_numbers[-1])
+            except ValueError:
+                pass
         return None
 
     def _extract_sniper_points(self, result: Any) -> Dict[str, Optional[float]]:
         """
-        抽取狙击点位数据
+        Extract sniper point values from an AnalysisResult.
+
+        Tries multiple extraction paths to handle different dashboard structures:
+        1. result.get_sniper_points() (standard path)
+        2. Direct dashboard dict traversal with various nesting levels
+        3. Fallback from raw_result dict if available
         """
         raw_points = {}
+
+        # Path 1: standard method
         if hasattr(result, "get_sniper_points"):
             raw_points = result.get_sniper_points() or {}
+
+        # Path 2: direct dashboard traversal when standard path yields empty values
+        if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
+            dashboard = getattr(result, "dashboard", None)
+            if isinstance(dashboard, dict):
+                raw_points = self._find_sniper_in_dashboard(dashboard) or raw_points
+
+        # Path 3: try raw_result for agent mode results
+        if not any(raw_points.get(k) for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
+            raw_response = getattr(result, "raw_response", None)
+            if isinstance(raw_response, dict):
+                raw_points = self._find_sniper_in_dashboard(raw_response) or raw_points
 
         return {
             "ideal_buy": self._parse_sniper_value(raw_points.get("ideal_buy")),
@@ -1213,6 +1273,43 @@ class DatabaseManager:
             "stop_loss": self._parse_sniper_value(raw_points.get("stop_loss")),
             "take_profit": self._parse_sniper_value(raw_points.get("take_profit")),
         }
+
+    @staticmethod
+    def _find_sniper_in_dashboard(d: dict) -> Optional[Dict[str, Any]]:
+        """
+        Recursively search for sniper_points in a dashboard dict.
+        Handles various nesting: dashboard.battle_plan.sniper_points,
+        dashboard.dashboard.battle_plan.sniper_points, etc.
+        """
+        if not isinstance(d, dict):
+            return None
+
+        # Direct: d has sniper_points keys at top level
+        if "ideal_buy" in d:
+            return d
+
+        # d.sniper_points
+        sp = d.get("sniper_points")
+        if isinstance(sp, dict) and sp:
+            return sp
+
+        # d.battle_plan.sniper_points
+        bp = d.get("battle_plan")
+        if isinstance(bp, dict):
+            sp = bp.get("sniper_points")
+            if isinstance(sp, dict) and sp:
+                return sp
+
+        # d.dashboard.battle_plan.sniper_points (double-nested)
+        inner = d.get("dashboard")
+        if isinstance(inner, dict):
+            bp = inner.get("battle_plan")
+            if isinstance(bp, dict):
+                sp = bp.get("sniper_points")
+                if isinstance(sp, dict) and sp:
+                    return sp
+
+        return None
 
     @staticmethod
     def _build_fallback_url_key(
@@ -1250,9 +1347,96 @@ class DatabaseManager:
                 ConversationMessage.session_id == session_id
             ).order_by(ConversationMessage.created_at.desc()).limit(limit)
             messages = session.execute(stmt).scalars().all()
-            
+
             # 倒序返回，保证时间顺序
             return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
+
+    def get_chat_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        获取聊天会话列表（从 conversation_messages 聚合）
+
+        Returns:
+            按最近活跃时间倒序的会话列表，每条包含 session_id, title, message_count, last_active
+        """
+        from sqlalchemy import func
+
+        with self.session_scope() as session:
+            # 聚合每个 session 的消息数和最后活跃时间
+            stmt = (
+                select(
+                    ConversationMessage.session_id,
+                    func.count(ConversationMessage.id).label("message_count"),
+                    func.min(ConversationMessage.created_at).label("created_at"),
+                    func.max(ConversationMessage.created_at).label("last_active"),
+                )
+                .group_by(ConversationMessage.session_id)
+                .order_by(desc(func.max(ConversationMessage.created_at)))
+                .limit(limit)
+            )
+            rows = session.execute(stmt).all()
+
+            results = []
+            for row in rows:
+                sid = row.session_id
+                # 取该会话第一条 user 消息作为标题
+                first_user_msg = session.execute(
+                    select(ConversationMessage.content)
+                    .where(
+                        and_(
+                            ConversationMessage.session_id == sid,
+                            ConversationMessage.role == "user",
+                        )
+                    )
+                    .order_by(ConversationMessage.created_at)
+                    .limit(1)
+                ).scalar()
+                title = (first_user_msg or "新对话")[:60]
+
+                results.append({
+                    "session_id": sid,
+                    "title": title,
+                    "message_count": row.message_count,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "last_active": row.last_active.isoformat() if row.last_active else None,
+                })
+            return results
+
+    def get_conversation_messages(self, session_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        获取单个会话的完整消息列表（用于前端恢复历史）
+        """
+        with self.session_scope() as session:
+            stmt = (
+                select(ConversationMessage)
+                .where(ConversationMessage.session_id == session_id)
+                .order_by(ConversationMessage.created_at)
+                .limit(limit)
+            )
+            messages = session.execute(stmt).scalars().all()
+            return [
+                {
+                    "id": str(msg.id),
+                    "role": msg.role,
+                    "content": msg.content,
+                    "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                }
+                for msg in messages
+            ]
+
+    def delete_conversation_session(self, session_id: str) -> int:
+        """
+        删除指定会话的所有消息
+
+        Returns:
+            删除的消息数
+        """
+        with self.session_scope() as session:
+            result = session.execute(
+                delete(ConversationMessage).where(
+                    ConversationMessage.session_id == session_id
+                )
+            )
+            return result.rowcount
 
 
 # 便捷函数

@@ -1,11 +1,13 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { agentApi } from '../api/agent';
 import { generateUUID } from '../utils/uuid';
-import type { StrategyInfo } from '../api/agent';
+import type { StrategyInfo, ChatSessionItem } from '../api/agent';
 import { historyApi } from '../api/history';
+
+const STORAGE_KEY_SESSION = 'dsa_chat_session_id';
 
 interface Message {
   id: string;
@@ -64,8 +66,20 @@ const ChatPage: React.FC = () => {
   const [showStrategyDesc, setShowStrategyDesc] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const initialFollowUpHandled = useRef(false);
-  // Stable session ID for multi-turn conversation - persists for the page lifetime
-  const sessionIdRef = useRef(generateUUID());
+
+  // Session management
+  const [sessionId, setSessionId] = useState<string>(() => {
+    return localStorage.getItem(STORAGE_KEY_SESSION) || generateUUID();
+  });
+  // Keep a ref in sync for use inside streaming callback
+  const sessionIdRef = useRef(sessionId);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
+
+  // Chat history sidebar
+  const [sessions, setSessions] = useState<ChatSessionItem[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -82,6 +96,76 @@ const ChatPage: React.FC = () => {
       setSelectedStrategy(defaultId);
     }).catch(() => {});
   }, []);
+
+  // Load sessions list
+  const loadSessions = useCallback(() => {
+    setSessionsLoading(true);
+    agentApi.getChatSessions().then(setSessions).catch(() => {}).finally(() => setSessionsLoading(false));
+  }, []);
+
+  // Load sessions list + restore messages on mount (with stale session detection)
+  const sessionRestoredRef = useRef(false);
+  useEffect(() => {
+    if (sessionRestoredRef.current) return;
+    sessionRestoredRef.current = true;
+    const savedId = localStorage.getItem(STORAGE_KEY_SESSION);
+    setSessionsLoading(true);
+    agentApi.getChatSessions().then((sessionList) => {
+      setSessions(sessionList);
+      if (savedId) {
+        const sessionExists = sessionList.some((s) => s.session_id === savedId);
+        if (sessionExists) {
+          return agentApi.getChatSessionMessages(savedId).then((msgs) => {
+            if (msgs.length > 0) {
+              setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content })));
+            }
+          });
+        }
+        // Session was deleted externally — reset to a new session
+        const newId = generateUUID();
+        setSessionId(newId);
+        sessionIdRef.current = newId;
+      }
+    }).catch(() => {}).finally(() => setSessionsLoading(false));
+  }, []);
+
+  // Persist session_id to localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_SESSION, sessionId);
+  }, [sessionId]);
+
+  // Switch to an existing session
+  const switchSession = useCallback((targetSessionId: string) => {
+    if (targetSessionId === sessionId && messages.length > 0) return;
+    setMessages([]);
+    setSessionId(targetSessionId);
+    sessionIdRef.current = targetSessionId;
+    setSidebarOpen(false);
+    agentApi.getChatSessionMessages(targetSessionId).then((msgs) => {
+      setMessages(msgs.map((m) => ({ id: m.id, role: m.role, content: m.content })));
+    }).catch(() => {});
+  }, [sessionId, messages.length]);
+
+  // Start a new conversation
+  const startNewChat = useCallback(() => {
+    const newId = generateUUID();
+    setSessionId(newId);
+    sessionIdRef.current = newId;
+    setMessages([]);
+    setProgressSteps([]);
+    followUpContextRef.current = null;
+    setSidebarOpen(false);
+  }, []);
+
+  // Delete with confirmation
+  const confirmDelete = useCallback(() => {
+    if (!deleteConfirmId) return;
+    agentApi.deleteChatSession(deleteConfirmId).then(() => {
+      setSessions((prev) => prev.filter((s) => s.session_id !== deleteConfirmId));
+      if (deleteConfirmId === sessionId) startNewChat();
+    }).catch(() => {});
+    setDeleteConfirmId(null);
+  }, [deleteConfirmId, sessionId, startNewChat]);
 
   // Handle follow-up from report page: ?stock=600519&name=贵州茅台&queryId=xxx
   useEffect(() => {
@@ -130,9 +214,23 @@ const ChatPage: React.FC = () => {
     setLoading(true);
     setProgressSteps([]);
 
+    const currentSessionId = sessionIdRef.current;
+
+    // Optimistically add new session to sidebar if not already present
+    setSessions((prev) => {
+      if (prev.some((s) => s.session_id === currentSessionId)) return prev;
+      return [{
+        session_id: currentSessionId,
+        title: msgText.slice(0, 60),
+        message_count: 1,
+        created_at: new Date().toISOString(),
+        last_active: new Date().toISOString(),
+      }, ...prev];
+    });
+
     const payload: ChatStreamPayload = {
       message: userMessage.content,
-      session_id: sessionIdRef.current,
+      session_id: currentSessionId,
       skills: usedStrategy ? [usedStrategy] : undefined,
     };
     // Attach follow-up context if available (data reuse from report page)
@@ -216,6 +314,7 @@ const ChatPage: React.FC = () => {
     } finally {
       setLoading(false);
       setProgressSteps([]);
+      loadSessions(); // Refresh sidebar after new message
     }
   };
 
@@ -315,19 +414,125 @@ const ChatPage: React.FC = () => {
     </div>
   );
 
-  return (
-    <div className="h-screen flex flex-col max-w-5xl mx-auto w-full p-4 md:p-6">
-      <header className="mb-6 flex-shrink-0">
-        <h1 className="text-2xl font-bold text-white mb-2 flex items-center gap-2">
-          <svg className="w-6 h-6 text-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+  const sidebarContent = (
+    <>
+      <div className="p-3 border-b border-white/5 flex items-center justify-between">
+        <span className="text-sm font-medium text-white">历史对话</span>
+        <button
+          onClick={startNewChat}
+          className="p-1.5 rounded-lg hover:bg-white/10 transition-colors text-secondary hover:text-white"
+          title="新对话"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
-          问股
-        </h1>
-        <p className="text-secondary text-sm">向 AI 询问个股分析，获取基于策略的交易建议与实时决策报告。</p>
-      </header>
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto custom-scrollbar">
+        {sessionsLoading ? (
+          <div className="p-4 text-center text-xs text-muted">加载中...</div>
+        ) : sessions.length === 0 ? (
+          <div className="p-4 text-center text-xs text-muted">暂无历史对话</div>
+        ) : (
+          sessions.map((s) => (
+            <button
+              key={s.session_id}
+              onClick={() => switchSession(s.session_id)}
+              className={`w-full text-left px-3 py-2.5 border-b border-white/5 hover:bg-white/5 transition-colors group ${
+                s.session_id === sessionId ? 'bg-white/10' : ''
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm text-secondary group-hover:text-white truncate flex-1">
+                  {s.title}
+                </span>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setDeleteConfirmId(s.session_id); }}
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-white/10 text-muted hover:text-red-400 transition-all flex-shrink-0"
+                  title="删除"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
+              <div className="text-xs text-muted mt-0.5">
+                {s.message_count} 条消息
+                {s.last_active && ` · ${new Date(s.last_active).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`}
+              </div>
+            </button>
+          ))
+        )}
+      </div>
+    </>
+  );
 
-      <div className="flex-1 flex flex-col glass-card overflow-hidden min-h-0 relative z-10">
+  return (
+    <div className="h-screen flex max-w-6xl mx-auto w-full p-4 md:p-6 gap-4">
+      {/* Desktop sidebar */}
+      <div className="hidden md:flex flex-col w-64 flex-shrink-0 glass-card overflow-hidden">
+        {sidebarContent}
+      </div>
+
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-40 md:hidden" onClick={() => setSidebarOpen(false)}>
+          <div className="absolute inset-0 bg-black/60" />
+          <div
+            className="absolute left-0 top-0 bottom-0 w-72 flex flex-col glass-card overflow-hidden border-r border-white/10 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {sidebarContent}
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation dialog */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setDeleteConfirmId(null)}>
+          <div className="bg-elevated border border-white/10 rounded-xl p-6 max-w-sm mx-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-white font-medium mb-2">删除对话</h3>
+            <p className="text-sm text-secondary mb-5">删除后，该对话将不可恢复，确认删除吗？</p>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setDeleteConfirmId(null)}
+                className="px-4 py-1.5 rounded-lg text-sm text-secondary hover:text-white hover:bg-white/5 border border-white/10 transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={confirmDelete}
+                className="px-4 py-1.5 rounded-lg text-sm text-white bg-red-500/80 hover:bg-red-500 transition-colors"
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main chat area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <header className="mb-4 flex-shrink-0">
+          <h1 className="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="md:hidden p-1.5 -ml-1 rounded-lg hover:bg-white/10 transition-colors text-secondary hover:text-white"
+              title="历史对话"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <svg className="w-6 h-6 text-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            问股
+          </h1>
+          <p className="text-secondary text-sm">向 AI 询问个股分析，获取基于策略的交易建议与实时决策报告。</p>
+        </header>
+
+        <div className="flex-1 flex flex-col glass-card overflow-hidden min-h-0 relative z-10">
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 custom-scrollbar relative z-10">
           {messages.length === 0 && !loading ? (
@@ -518,6 +723,7 @@ const ChatPage: React.FC = () => {
           </div>
         </div>
       </div>
+      </div>{/* end main chat area */}
     </div>
   );
 };

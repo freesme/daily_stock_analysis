@@ -121,7 +121,7 @@ def _parse_codes_from_text(text: str) -> List[str]:
 
 def _is_key_valid(key: Optional[str]) -> bool:
     """检查 API Key 是否有效（非占位符）。"""
-    return bool(key and not key.startswith("your_") and len(key) > 10)
+    return bool(key and not key.startswith("your_") and len(key) >= 8)
 
 
 def _select_vision_provider() -> str:

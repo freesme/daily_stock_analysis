@@ -64,24 +64,16 @@ class ToolDefinition:
 
     def to_gemini_declaration(self) -> dict:
         """
-        Convert to Gemini FunctionDeclaration dict.
+        Convert to Gemini FunctionDeclaration dict (JSON Schema format).
 
-        Gemini uses a flat ``parameters`` dict with ``type: "OBJECT"``,
-        ``properties``, and ``required`` keys.
+        Uses lowercase JSON Schema types ("object", "string", etc.) as required
+        by the google-genai SDK's ``parameters_json_schema`` field.
         """
         properties: Dict[str, Any] = {}
         required: List[str] = []
-        type_map = {
-            "string": "STRING",
-            "number": "NUMBER",
-            "integer": "INTEGER",
-            "boolean": "BOOLEAN",
-            "array": "ARRAY",
-            "object": "OBJECT",
-        }
         for p in self.parameters:
             prop: Dict[str, Any] = {
-                "type": type_map.get(p.type, "STRING"),
+                "type": p.type,
                 "description": p.description,
             }
             if p.enum:
@@ -93,7 +85,7 @@ class ToolDefinition:
             "name": self.name,
             "description": self.description,
             "parameters": {
-                "type": "OBJECT",
+                "type": "object",
                 "properties": properties,
             },
         }
@@ -196,8 +188,13 @@ class ToolRegistry:
         Returns the result as a JSON-serializable value.
         Raises ``KeyError`` if tool not found.
         Raises the handler's exception on execution failure.
+
+        Supports Gemini namespaced tool names (e.g. default_api:get_realtime_quote -> get_realtime_quote).
         """
         tool_def = self._tools.get(name)
+        if tool_def is None and ":" in name:
+            # Gemini may return namespaced names like default_api:get_realtime_quote
+            tool_def = self._tools.get(name.split(":", 1)[-1])
         if tool_def is None:
             raise KeyError(f"Tool '{name}' not found in registry. Available: {self.list_names()}")
 

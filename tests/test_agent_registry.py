@@ -167,9 +167,9 @@ class TestToolDefinitionSchemas(unittest.TestCase):
         self.assertEqual(decl["name"], "quote_tool")
         self.assertIn("description", decl)
         params = decl["parameters"]
-        self.assertEqual(params["type"], "OBJECT")
+        self.assertEqual(params["type"], "object")
         self.assertIn("stock_code", params["properties"])
-        self.assertEqual(params["properties"]["stock_code"]["type"], "STRING")
+        self.assertEqual(params["properties"]["stock_code"]["type"], "string")
         self.assertIn("stock_code", params.get("required", []))
         # Optional param should NOT be in required
         self.assertNotIn("days", params.get("required", []))
