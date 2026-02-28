@@ -202,6 +202,56 @@ class TestAgentResultConversion(unittest.TestCase):
         self.assertEqual(result.operation_advice, "观望")
         self.assertIn("Max steps exceeded", result.error_message)
 
+    def test_convert_uses_dashboard_stock_name_when_input_is_placeholder(self):
+        """When input name is placeholder-like, prefer dashboard stock_name."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "科创芯片ETF",
+                "sentiment_score": 75,
+                "trend_prediction": "震荡偏多",
+                "operation_advice": "持有",
+                "decision_type": "hold",
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "588200", "股票588200", ReportType.SIMPLE, "q-placeholder"
+        )
+        self.assertEqual(result.name, "科创芯片ETF")
+
+    def test_convert_keeps_input_stock_name_when_valid(self):
+        """When input name is already valid, do not overwrite with dashboard value."""
+        pipeline = self._make_pipeline()
+
+        from src.agent.executor import AgentResult
+        from src.enums import ReportType
+
+        agent_result = AgentResult(
+            success=True,
+            content="{}",
+            dashboard={
+                "stock_name": "错误名称",
+                "sentiment_score": 70,
+                "trend_prediction": "看多",
+                "operation_advice": "持有",
+                "decision_type": "hold",
+            },
+            provider="gemini",
+        )
+
+        result = pipeline._agent_result_to_analysis_result(
+            agent_result, "600519", "贵州茅台", ReportType.SIMPLE, "q-valid"
+        )
+        self.assertEqual(result.name, "贵州茅台")
+
 
 # ============================================================
 # Skill registration in pipeline
@@ -326,6 +376,84 @@ class TestPipelineRouting(unittest.TestCase):
             # _analyze_with_agent should NOT exist as a mock (it's the real method)
             # Instead, verify analyzer.analyze was called (legacy path)
             pipeline.analyzer.analyze.assert_called_once()
+
+
+class TestAnalyzeWithAgentStockName(unittest.TestCase):
+    """Test stock-name handling in _analyze_with_agent."""
+
+    def test_analyze_with_agent_uses_resolved_name_for_news_persistence(self):
+        """Should use resolved stock name from dashboard for search and DB persistence."""
+        with patch('src.core.pipeline.get_config') as mock_config, \
+             patch('src.core.pipeline.get_db'), \
+             patch('src.core.pipeline.DataFetcherManager'), \
+             patch('src.core.pipeline.GeminiAnalyzer'), \
+             patch('src.core.pipeline.NotificationService'), \
+             patch('src.core.pipeline.SearchService'), \
+             patch('src.agent.factory.build_agent_executor') as mock_build_executor:
+
+            mock_cfg = MagicMock()
+            mock_cfg.max_workers = 2
+            mock_cfg.agent_mode = True
+            mock_cfg.agent_max_steps = 10
+            mock_cfg.agent_skills = []
+            mock_cfg.bocha_api_keys = []
+            mock_cfg.tavily_api_keys = []
+            mock_cfg.brave_api_keys = []
+            mock_cfg.serpapi_keys = []
+            mock_cfg.news_max_age_days = 7
+            mock_cfg.enable_realtime_quote = True
+            mock_cfg.enable_chip_distribution = True
+            mock_cfg.realtime_source_priority = []
+            mock_cfg.save_context_snapshot = False
+            mock_config.return_value = mock_cfg
+
+            from src.core.pipeline import StockAnalysisPipeline
+            from src.agent.executor import AgentResult
+            from src.enums import ReportType
+            pipeline = StockAnalysisPipeline(config=mock_cfg)
+
+            agent_result = AgentResult(
+                success=True,
+                content="{}",
+                dashboard={
+                    "stock_name": "科创芯片ETF",
+                    "sentiment_score": 78,
+                    "trend_prediction": "震荡偏多",
+                    "operation_advice": "持有",
+                    "decision_type": "hold",
+                },
+                provider="gemini",
+            )
+            mock_executor = MagicMock()
+            mock_executor.run.return_value = agent_result
+            mock_build_executor.return_value = mock_executor
+
+            news_response = MagicMock()
+            news_response.success = True
+            news_response.results = [{"title": "test"}]
+            news_response.query = "test query"
+            pipeline.search_service.is_available = True
+            pipeline.search_service.search_stock_news.return_value = news_response
+
+            result = pipeline._analyze_with_agent(
+                code="588200",
+                report_type=ReportType.SIMPLE,
+                query_id="q-news",
+                stock_name="股票588200",
+                realtime_quote=None,
+                chip_data=None
+            )
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result.name, "科创芯片ETF")
+            pipeline.search_service.search_stock_news.assert_called_once_with(
+                stock_code="588200",
+                stock_name="科创芯片ETF",
+                max_results=5
+            )
+            pipeline.db.save_news_intel.assert_called_once()
+            saved_kwargs = pipeline.db.save_news_intel.call_args.kwargs
+            self.assertEqual(saved_kwargs["name"], "科创芯片ETF")
 
 
 # ============================================================

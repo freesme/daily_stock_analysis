@@ -6,8 +6,13 @@
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
 ## [Unreleased]
+- 🧠 新增 A股/美股大盘分析策略系统：复盘 Prompt 注入区域化策略蓝图，并在输出中增加“策略计划”章节，统一给出仓位与风险触发条件建议。
 
 ### 修复（#patch）
+- 🐛 **Agent 模式下部分报告显示占位股票名**（Issue #463）
+  - 根因：`_agent_result_to_analysis_result` 未回填 Agent dashboard 返回的 `stock_name`，后续新闻检索与持久化继续使用 `股票+代码` 占位名称
+  - 修复：当输入名称为占位值时，优先使用 dashboard `stock_name`；并统一将回填后的名称用于 `search_stock_news` 与 `save_news_intel`
+  - 测试：新增回归用例覆盖占位名回填、有效名称不覆盖、以及 Agent 流程中的新闻检索/入库名称一致性
 - 🐛 **Web 服务启动自动构建前端静态资源**
   - `main.py` 在 `--serve/--serve-only`（含 `--webui/--webui-only`）模式启动前，自动执行 `apps/dsa-web` 下的 `npm install && npm run build`
   - 新增环境变量 `WEBUI_AUTO_BUILD`（默认 `true`），可关闭自动构建并改为手动构建
@@ -55,11 +60,19 @@
   - `session_id` 通过 localStorage 持久化，跨页面刷新保持会话连续性
 - ⚙️ **Agent 工具链能力增强**
   - 扩展 `analysis_tools` 与 `data_tools`，优化策略问股的工具调用链路与分析覆盖
-- 📡 **LiteLLM Proxy 接入**
-  - 支持通过 LiteLLM Proxy 统一路由 Gemini、DeepSeek、Claude 等模型，自动处理 Reasoning 模型透传
-  - 新增 `docs/LITELLM_PROXY_SETUP.md` 接入指南、`litellm_config.yaml.example` 示例配置
-  - `.env` 方案五：`OPENAI_BASE_URL` + `OPENAI_API_KEY` + `OPENAI_MODEL` 指向 Proxy
-  - OpenAI 兼容 API Key 长度校验放宽为 `>= 8`，支持 LiteLLM 本地开发常用短 Key
+- 📡 **LiteLLM 直接集成 + 多 API Key 支持**（#minor）
+  - 移除 google-generativeai、google-genai、anthropic 原生 SDK；统一通过 `litellm>=1.80.10` 调用所有 LLM
+  - 新增 `LITELLM_MODEL`（主模型，必须含 provider 前缀）、`LITELLM_FALLBACK_MODELS`（跨模型降级）配置项
+  - 新增 `GEMINI_API_KEYS`、`ANTHROPIC_API_KEYS`、`OPENAI_API_KEYS` 多 Key 解析，逗号分隔；单 Key 用户无需修改
+  - 多 Key 时自动构建 LiteLLM Router（`simple-shuffle`），同一模型多 Key 轮换 + 429 自动冷却
+  - 跨模型降级（LITELLM_FALLBACK_MODELS）与 Router 多 Key 轮换分层独立，互不干扰
+  - `image_stock_extractor` 改用 litellm vision（OpenAI image_url 格式），保留 Gemini 3 视觉模型降级逻辑
+  - `analyzer._call_api_with_retry` 重命名为 `_call_litellm`，`_token_param_mode` 逻辑删除（litellm 统一处理 max_tokens）
+  - `market_analyzer` 不再直接访问 `analyzer._use_openai` / `_model` 等私有成员
+  - `registry.to_gemini_declarations()` / `to_anthropic_tools()` 死代码删除；tool 声明统一走 OpenAI 格式
+  - `executor.tool_decls` 简化为 `to_openai_tools()` 列表，移除 gemini/anthropic 键
+  - `.env` 变更：旧格式的 `GEMINI_MODEL`（无前缀）仅用于 `LITELLM_MODEL` 未配置时的自动推断；显式配置必须加前缀
+  - 回滚方案：将 `litellm>=1.80.10` 替换回原生 SDK 并还原此 commit
 
 ### 修复（#patch）
 - 🐛 **Bocha 搜索瞬时 SSL/网络错误重试**
@@ -93,8 +106,8 @@
   - 修复（原生 Gemini 路径）：`llm_adapter._call_gemini` 迁移至 `google-genai` 新 SDK（旧 `google-generativeai` SDK 不定义 Part.thought_signature，unknown fields 被静默丢弃）；新 SDK 正确解析 Part 级别 `thought_signature`（bytes），base64 编码后存入 `ToolCall.thought_signature`，回传时 base64 解码写回 Part
   - 修复（工具声明类型）：`registry.to_gemini_declaration()` 将 Protobuf 大写类型（`OBJECT`/`STRING`）更正为 JSON Schema 小写类型（`object`/`string`），以兼容新 SDK 的 `parameters_json_schema`
   - 修复（命名空间工具名）：`registry.execute` 支持 Gemini 命名空间工具名（如 `default_api:get_realtime_quote` → `get_realtime_quote`）
-  - 依赖变更：新增 `google-genai>=1.0.0`；`google-generativeai>=0.8.0` 保留供 `analyzer.py` 和 `image_stock_extractor.py` 使用
-  - 兼容性：非 Reasoning 模型不受影响；与 LiteLLM Proxy 及其他 OpenAI 兼容代理兼容
+  - 注：原生 Gemini SDK 路径已在后续 LiteLLM 直接集成中迁移，thought_signature 现由 litellm 透传
+  - 兼容性：非 Reasoning 模型不受影响
 - 🐛 **Agent 模式下报告页「相关资讯」为空**（Issue #396）
   - 根因：Agent 工具结果仅用于 LLM 上下文，未写入 `news_intel`，前端 `GET /api/v1/history/{query_id}/news` 查询不到数据
   - 修复：在 `_analyze_with_agent` 中 Agent 运行结束后，调用 `search_stock_news` 并持久化（仅 1 次 API 调用，与 Agent 工具逻辑一致，无额外延迟）
@@ -124,6 +137,13 @@
   - 修复测试中的硬编码数据，减少因固定值导致的回归误报
 - 🐛 **yfinance 并行下载股票代码问题修复**
   - 增加了代码逻辑，根据当前股票代码筛选并提取下载的数据，解决dataframe里出现多个股票的数据，造成后续数据处理出错。
+
+### 修复（#patch）
+- 🐛 **大盘复盘策略框架与免责声明一致性修复**
+  - 统一 cn/us 模板复盘策略段落，全部复用 `self.strategy.to_markdown_block()`，避免美股维度与蓝图定义漂移
+  - 策略框架标题按区域输出中文/英文，避免英文报告出现“六、策略框架”
+  - 复盘 Prompt 的“策略计划”章节明确要求附加“建议仅供参考，不构成投资建议”
+  - 修正 `daily_analysis.yml` 定时注释与实际 cron（UTC 08:00）不一致问题
 
 ### 测试（#patch）
 - ✅ **Agent 相关测试更新**

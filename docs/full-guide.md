@@ -221,6 +221,7 @@ daily_stock_analysis/
 | `ENABLE_REALTIME_QUOTE` | 启用实时行情（关闭后使用历史收盘价分析） | `true` | 可选 |
 | `ENABLE_REALTIME_TECHNICAL_INDICATORS` | 盘中实时技术面：启用时用实时价计算 MA5/MA10/MA20 与多头排列（Issue #234）；关闭则用昨日收盘 | `true` | 可选 |
 | `ENABLE_CHIP_DISTRIBUTION` | 启用筹码分布分析（该接口不稳定，云端部署建议关闭） | `true` | 可选 |
+| `ENABLE_EASTMONEY_PATCH` | 东财接口补丁：东财接口频繁失败（如 RemoteDisconnected、连接被关闭）时建议设为 `true`，注入 NID 令牌与随机 User-Agent 以降低被限流概率 | `false` | 可选 |
 | `REALTIME_SOURCE_PRIORITY` | 实时行情数据源优先级（逗号分隔），如 `tencent,akshare_sina,efinance,akshare_em` | 见 .env.example | 可选 |
 
 ### 其他配置
@@ -581,6 +582,14 @@ PUSHOVER_API_TOKEN=your_api_token
 - 支持美股/港股数据
 - 美股历史数据与实时行情均统一使用 YFinance，以避免 akshare 美股复权异常导致的技术指标错误
 
+### 东财接口频繁失败时的处理
+
+若日志出现 `RemoteDisconnected`、`push2his.eastmoney.com` 连接被关闭等，多为东财限流。建议：
+
+1. 在 `.env` 中设置 `ENABLE_EASTMONEY_PATCH=true`
+2. 将 `MAX_WORKERS=1` 降低并发
+3. 若已配置 Tushare，可优先使用 Tushare 数据源
+
 ---
 
 ## 高级功能
@@ -613,14 +622,38 @@ OPENAI_MODEL=deepseek-chat
 # 思考模式：deepseek-reasoner、deepseek-r1、qwq 等自动识别；deepseek-chat 系统按模型名自动启用
 ```
 
-### LiteLLM Proxy（统一多模型网关）
+### LiteLLM 直接集成（多模型 + 多 Key 负载均衡）
 
-通过 LiteLLM Proxy 可在一个 OpenAI 兼容接口后统一路由 Gemini、DeepSeek、Claude 等模型，并自动处理 Reasoning 模型（Gemini 3 等）的 `thought_signature` 透传，避免多轮工具调用 400 错误。
+本项目通过 [LiteLLM](https://github.com/BerriAI/litellm) 统一调用所有 LLM，无需单独启动 Proxy 服务。
 
-详见 [LiteLLM Proxy 接入指南](LITELLM_PROXY_SETUP.md)。
+**两层机制**：同一模型多 Key 轮换（Router）与跨模型降级（Fallback）分层独立，互不干扰。
 
-> ⚠️ 使用 LiteLLM Proxy 时须清空 `GEMINI_API_KEY`、`ANTHROPIC_API_KEY`、`AIHUBMIX_KEY`，
-> 仅保留 `OPENAI_BASE_URL` + `OPENAI_API_KEY` + `OPENAI_MODEL`，否则系统优先走原生 SDK 绕过 Proxy。
+**多 Key + 跨模型降级配置示例**：
+
+```env
+# 主模型：3 个 Gemini Key 轮换，任一 429 时 Router 自动切换下一个 Key
+GEMINI_API_KEYS=key1,key2,key3
+LITELLM_MODEL=gemini/gemini-3-flash-preview
+
+# 跨模型降级：主模型全部 Key 均失败时，按序尝试 Claude → GPT
+# 需配置对应 API Key：ANTHROPIC_API_KEY、OPENAI_API_KEY
+LITELLM_FALLBACK_MODELS=anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o-mini
+```
+
+**预期行为**：首次请求用 `key1`；若 429，Router 下次用 `key2`；若 3 个 Key 均不可用，则切换到 Claude，再失败则切换到 GPT。
+
+> ⚠️ `LITELLM_MODEL` 必须包含 provider 前缀（如 `gemini/`、`anthropic/`、`openai/`），
+> 否则系统无法识别应使用哪组 API Key。旧格式的 `GEMINI_MODEL`（无前缀）仅用于未配置 `LITELLM_MODEL` 时的自动推断。
+
+**依赖说明**：`requirements.txt` 中保留 `openai>=1.0.0`，因 LiteLLM 内部依赖 OpenAI SDK 作为统一接口；显式保留可确保版本兼容性，用户无需单独配置。
+
+**视觉模型（图片提取股票代码）**：
+
+从图片提取股票代码（如 `/api/v1/stocks/extract-from-image`）使用 LiteLLM Vision，采用 OpenAI `image_url` 格式，支持 Gemini、Claude、OpenAI 等所有 Vision-capable 模型。
+
+- **模型优先级**：`OPENAI_VISION_MODEL` > `LITELLM_MODEL` > 根据已有 API Key 推断
+- **Gemini 3 限制**：Gemini 3 不支持 Vision，系统自动降级为 `gemini/gemini-2.0-flash`
+- **主模型不支持 Vision 时**：若主模型为 DeepSeek 等非 Vision 模型，可显式配置 `OPENAI_VISION_MODEL=openai/gpt-4o` 或 `gemini/gemini-2.0-flash` 供图片提取使用
 
 ### 调试模式
 

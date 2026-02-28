@@ -517,6 +517,9 @@ class DatabaseManager:
         """
         if target_date is None:
             target_date = date.today()
+        # 注意：这里的 target_date 语义是“自然日”，而不是“最新交易日”。
+        # 在周末/节假日/非交易日运行时，即使数据库已有最新交易日数据，这里也会返回 False。
+        # 该行为目前保留（按需求不改逻辑）。
         
         with self.get_session() as session:
             result = session.execute(
@@ -1056,6 +1059,10 @@ class DatabaseManager:
         """
         if target_date is None:
             target_date = date.today()
+        # 注意：尽管入参提供了 target_date，但当前实现实际使用的是“最新两天数据”（get_latest_data），
+        # 并不会按 target_date 精确取当日/前一交易日的上下文。
+        # 因此若未来需要支持“按历史某天复盘/重算”的可解释性，这里需要调整。
+        # 该行为目前保留（按需求不改逻辑）。
         
         # 获取最近2天数据
         recent_data = self.get_latest_data(code, days=2)
@@ -1101,6 +1108,9 @@ class DatabaseManager:
         - 空头排列：close < ma5 < ma10 < ma20
         - 震荡整理：其他情况
         """
+        # 注意：这里的均线形态判断基于“close/ma5/ma10/ma20”静态比较，
+        # 未考虑均线拐点、斜率、或不同数据源复权口径差异。
+        # 该行为目前保留（按需求不改逻辑）。
         close = data.close or 0
         ma5 = data.ma5 or 0
         ma10 = data.ma10 or 0

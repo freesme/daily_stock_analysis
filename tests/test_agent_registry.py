@@ -157,22 +157,10 @@ class TestToolRegistry(unittest.TestCase):
 # ============================================================
 
 class TestToolDefinitionSchemas(unittest.TestCase):
-    """Test multi-provider schema generation."""
+    """Test schema generation (OpenAI format used by litellm for all providers)."""
 
     def setUp(self):
         self.tool = _make_tool("quote_tool")
-
-    def test_gemini_declaration(self):
-        decl = self.tool.to_gemini_declaration()
-        self.assertEqual(decl["name"], "quote_tool")
-        self.assertIn("description", decl)
-        params = decl["parameters"]
-        self.assertEqual(params["type"], "object")
-        self.assertIn("stock_code", params["properties"])
-        self.assertEqual(params["properties"]["stock_code"]["type"], "string")
-        self.assertIn("stock_code", params.get("required", []))
-        # Optional param should NOT be in required
-        self.assertNotIn("days", params.get("required", []))
 
     def test_openai_tool(self):
         oai = self.tool.to_openai_tool()
@@ -184,14 +172,6 @@ class TestToolDefinitionSchemas(unittest.TestCase):
         self.assertIn("stock_code", schema["properties"])
         self.assertIn("stock_code", schema["required"])
         self.assertNotIn("days", schema["required"])
-
-    def test_anthropic_tool(self):
-        ant = self.tool.to_anthropic_tool()
-        self.assertEqual(ant["name"], "quote_tool")
-        self.assertIn("input_schema", ant)
-        schema = ant["input_schema"]
-        self.assertEqual(schema["type"], "object")
-        self.assertIn("stock_code", schema["properties"])
 
     def test_enum_parameter(self):
         tool = ToolDefinition(
@@ -207,10 +187,6 @@ class TestToolDefinitionSchemas(unittest.TestCase):
             ],
             handler=lambda direction: direction,
         )
-        # Gemini
-        decl = tool.to_gemini_declaration()
-        self.assertEqual(decl["parameters"]["properties"]["direction"]["enum"], ["buy", "sell", "hold"])
-        # OpenAI
         oai = tool.to_openai_tool()
         self.assertEqual(oai["function"]["parameters"]["properties"]["direction"]["enum"], ["buy", "sell", "hold"])
 
@@ -218,9 +194,7 @@ class TestToolDefinitionSchemas(unittest.TestCase):
         reg = ToolRegistry()
         reg.register(_make_tool("t1"))
         reg.register(_make_tool("t2"))
-        self.assertEqual(len(reg.to_gemini_declarations()), 2)
         self.assertEqual(len(reg.to_openai_tools()), 2)
-        self.assertEqual(len(reg.to_anthropic_tools()), 2)
 
 
 # ============================================================
@@ -429,7 +403,7 @@ class TestBuiltinToolDefinitions(unittest.TestCase):
             self.assertEqual(td.category, "market")
 
     def test_all_tools_have_valid_schemas(self):
-        """All tools should generate valid schemas for all providers."""
+        """All tools should generate valid OpenAI-format schemas (used by litellm)."""
         from src.agent.tools.data_tools import ALL_DATA_TOOLS
         from src.agent.tools.analysis_tools import ALL_ANALYSIS_TOOLS
         from src.agent.tools.search_tools import ALL_SEARCH_TOOLS
@@ -437,16 +411,9 @@ class TestBuiltinToolDefinitions(unittest.TestCase):
 
         all_tools = ALL_DATA_TOOLS + ALL_ANALYSIS_TOOLS + ALL_SEARCH_TOOLS + ALL_MARKET_TOOLS
         for td in all_tools:
-            gemini = td.to_gemini_declaration()
-            self.assertIn("name", gemini)
-            self.assertIn("parameters", gemini)
-
             oai = td.to_openai_tool()
             self.assertEqual(oai["type"], "function")
             self.assertIn("parameters", oai["function"])
-
-            ant = td.to_anthropic_tool()
-            self.assertIn("input_schema", ant)
 
 
 if __name__ == '__main__':

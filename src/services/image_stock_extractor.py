@@ -16,7 +16,9 @@ import logging
 import re
 from typing import List, Optional, Tuple
 
-from src.config import get_config
+import litellm
+
+from src.config import Config, get_config
 
 logger = logging.getLogger(__name__)
 
@@ -119,110 +121,76 @@ def _parse_codes_from_text(text: str) -> List[str]:
     return result
 
 
-def _is_key_valid(key: Optional[str]) -> bool:
-    """检查 API Key 是否有效（非占位符）。"""
-    return bool(key and not key.startswith("your_") and len(key) >= 8)
-
-
-def _select_vision_provider() -> str:
-    """返回首个可用的 Vision 提供方：gemini、anthropic、openai。"""
+def _resolve_vision_model() -> str:
+    """Determine the litellm model to use for vision, with gemini-3 downgrade."""
     cfg = get_config()
-    if _is_key_valid(cfg.gemini_api_key):
-        return "gemini"
-    if _is_key_valid(cfg.anthropic_api_key):
-        return "anthropic"
-    if _is_key_valid(cfg.openai_api_key):
-        return "openai"
-    return ""
+    # Prefer explicit vision model, then primary litellm model
+    model = (cfg.openai_vision_model or cfg.litellm_model or "").strip()
+    if not model:
+        # Fallback: infer from available keys
+        if cfg.gemini_api_keys:
+            model = "gemini/gemini-2.0-flash"
+        elif cfg.anthropic_api_keys:
+            model = f"anthropic/{cfg.anthropic_model or 'claude-3-5-sonnet-20241022'}"
+        elif cfg.openai_api_keys:
+            model = f"openai/{cfg.openai_model or 'gpt-4o-mini'}"
+        else:
+            return ""
+    # Gemini 3 does not support vision; downgrade to gemini-2.0-flash
+    if "gemini-3" in model:
+        model = "gemini/gemini-2.0-flash"
+    return model
 
 
-def _call_gemini(image_b64: str, mime_type: str) -> str:
-    """调用 Gemini Vision API。"""
-    import google.generativeai as genai
+def _get_api_key_for_model(model: str, cfg: Config) -> Optional[str]:
+    """Return the first available API key for the given litellm model."""
+    if model.startswith("gemini/") or model.startswith("vertex_ai/"):
+        keys = [k for k in cfg.gemini_api_keys if k and len(k) >= 8]
+    elif model.startswith("anthropic/"):
+        keys = [k for k in cfg.anthropic_api_keys if k and len(k) >= 8]
+    else:
+        keys = [k for k in cfg.openai_api_keys if k and len(k) >= 8]
+    return keys[0] if keys else None
 
+
+def _call_litellm_vision(image_b64: str, mime_type: str) -> str:
+    """Extract stock codes from an image using litellm (all providers via OpenAI vision format)."""
     cfg = get_config()
-    genai.configure(api_key=cfg.gemini_api_key)
-    # 使用支持图像的模型（gemini-1.5-flash / gemini-2.0-flash）
-    # Ensure non-empty model name (cfg.gemini_model can be "")
-    model_name = (getattr(cfg, "gemini_model", "gemini-2.0-flash") or "gemini-2.0-flash")
-    if "gemini-3" in (model_name or ""):
-        model_name = "gemini-2.0-flash"
-    model = genai.GenerativeModel(model_name)
-    # Gemini API 要求的 inline_data 格式
-    part = {"inline_data": {"mime_type": mime_type, "data": image_b64}}
-    response = model.generate_content(
-        [part, EXTRACT_PROMPT],
-        request_options={"timeout": VISION_API_TIMEOUT},
-    )
-    if response and response.text:
-        return response.text
-    raise ValueError("Gemini returned empty response")
+    model = _resolve_vision_model()
+    if not model:
+        raise ValueError("未配置 Vision API。请设置 LITELLM_MODEL 或相关 API Key。")
 
+    api_key = _get_api_key_for_model(model, cfg)
+    if not api_key:
+        raise ValueError(f"No API key found for vision model {model}")
 
-def _call_anthropic(image_b64: str, mime_type: str) -> str:
-    """调用 Anthropic Messages API（带图像）。"""
-    from anthropic import Anthropic
-
-    cfg = get_config()
-    client = Anthropic(api_key=cfg.anthropic_api_key, timeout=VISION_API_TIMEOUT)
-    msg = client.messages.create(
-        model=cfg.anthropic_model,
-        max_tokens=1024,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": mime_type,
-                            "data": image_b64,
-                        },
-                    },
-                    {"type": "text", "text": EXTRACT_PROMPT},
-                ],
-            }
-        ],
-    )
-    if msg.content and len(msg.content) > 0 and hasattr(msg.content[0], "text"):
-        return msg.content[0].text
-    raise ValueError("Anthropic returned empty response")
-
-
-def _call_openai(image_b64: str, mime_type: str) -> str:
-    """调用 OpenAI Chat Completions（图像采用 base64 data URL）。"""
-    from openai import OpenAI
-
-    cfg = get_config()
-    client_kwargs = {"api_key": cfg.openai_api_key, "timeout": VISION_API_TIMEOUT}
-    if cfg.openai_base_url and cfg.openai_base_url.startswith("http"):
-        client_kwargs["base_url"] = cfg.openai_base_url
-    if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
-        client_kwargs["default_headers"] = {"APP-Code": "GPIJ3886"}
-    client = OpenAI(**client_kwargs)
-    # 使用 Vision 专用模型（若配置），否则用 openai_model（部分第三方模型不支持图像）
-    model = (cfg.openai_vision_model or cfg.openai_model or "gpt-4o-mini").strip() or "gpt-4o-mini"
     data_url = f"data:{mime_type};base64,{image_b64}"
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
+    call_kwargs: dict = {
+        "model": model,
+        "messages": [
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": EXTRACT_PROMPT},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": data_url},
-                    },
+                    {"type": "image_url", "image_url": {"url": data_url}},
                 ],
             }
         ],
-        max_tokens=1024,
-    )
+        "max_tokens": 1024,
+        "api_key": api_key,
+        "timeout": VISION_API_TIMEOUT,
+    }
+    # Add api_base and custom headers for OpenAI-compatible providers
+    if not model.startswith("gemini/") and not model.startswith("anthropic/") and not model.startswith("vertex_ai/"):
+        if cfg.openai_base_url:
+            call_kwargs["api_base"] = cfg.openai_base_url
+        if cfg.openai_base_url and "aihubmix.com" in cfg.openai_base_url:
+            call_kwargs["extra_headers"] = {"APP-Code": "GPIJ3886"}
+
+    response = litellm.completion(**call_kwargs)
     if response and response.choices and response.choices[0].message.content:
         return response.choices[0].message.content
-    raise ValueError("OpenAI returned empty response")
+    raise ValueError("LiteLLM vision returned empty response")
 
 
 def extract_stock_codes_from_image(
@@ -256,49 +224,18 @@ def extract_stock_codes_from_image(
 
     _verify_image_magic_bytes(image_bytes, mime_type)
 
-    provider = _select_vision_provider()
-    if not provider:
-        raise ValueError(
-            "未配置 Vision API。请设置 GEMINI_API_KEY、ANTHROPIC_API_KEY 或 OPENAI_API_KEY。"
-        )
-
     image_b64 = base64.b64encode(image_bytes).decode("ascii")
 
-    order = [provider] if provider else []
-    for p in ["gemini", "anthropic", "openai"]:
-        if p not in order:
-            order.append(p)
-
-    last_err: Optional[Exception] = None
-    for p in order:
-        cfg = get_config()
-        if p == "gemini" and not _is_key_valid(cfg.gemini_api_key):
-            continue
-        if p == "anthropic" and not _is_key_valid(cfg.anthropic_api_key):
-            continue
-        if p == "openai" and not _is_key_valid(cfg.openai_api_key):
-            continue
-
-        try:
-            if p == "gemini":
-                raw = _call_gemini(image_b64, mime_type)
-            elif p == "anthropic":
-                raw = _call_anthropic(image_b64, mime_type)
-            elif p == "openai":
-                raw = _call_openai(image_b64, mime_type)
-            else:
-                continue
-            codes = _parse_codes_from_text(raw)
-            logger.info(
-                f"[ImageExtractor] {p} 提取 {len(codes)} 个代码: "
-                f"{codes[:10]}{'...' if len(codes) > 10 else ''}"
-            )
-            return codes, raw
-        except Exception as e:
-            last_err = e
-            logger.warning(f"[ImageExtractor] {p} 调用失败: {e}")
-            continue
-
-    raise ValueError(
-        "所有 Vision API 均调用失败，请检查 API Key 与网络。"
-    ) from last_err
+    try:
+        raw = _call_litellm_vision(image_b64, mime_type)
+        codes = _parse_codes_from_text(raw)
+        model = _resolve_vision_model()
+        logger.info(
+            f"[ImageExtractor] {model} 提取 {len(codes)} 个代码: "
+            f"{codes[:10]}{'...' if len(codes) > 10 else ''}"
+        )
+        return codes, raw
+    except Exception as e:
+        raise ValueError(
+            f"Vision API 调用失败，请检查 API Key 与网络: {e}"
+        ) from e

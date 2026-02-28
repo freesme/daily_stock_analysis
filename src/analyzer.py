@@ -5,9 +5,9 @@ A股自选股智能分析系统 - AI分析层
 ===================================
 
 职责：
-1. 封装 Gemini API 调用逻辑
-2. 利用 Google Search Grounding 获取实时新闻
-3. 结合技术面和消息面生成分析报告
+1. 封装 LLM 调用逻辑（通过 LiteLLM 统一调用 Gemini/Anthropic/OpenAI 等）
+2. 结合技术面和消息面生成分析报告
+3. 解析 LLM 响应为结构化 AnalysisResult
 """
 
 import json
@@ -15,10 +15,13 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
+
+import litellm
 from json_repair import repair_json
+from litellm import Router
 
 from src.agent.llm_adapter import get_thinking_extra_body
-from src.config import get_config
+from src.config import Config, get_config
 
 logger = logging.getLogger(__name__)
 
@@ -519,500 +522,138 @@ class GeminiAnalyzer:
 5. **风险优先级**：舆情中的风险点要醒目标出"""
 
     def __init__(self, api_key: Optional[str] = None):
-        """
-        初始化 AI 分析器
-
-        优先级：Gemini > Anthropic > OpenAI
+        """Initialize LLM Analyzer via LiteLLM.
 
         Args:
-            api_key: Gemini API Key（可选，默认从配置读取）
+            api_key: Ignored (kept for backward compatibility). Keys are loaded from config.
         """
-        config = get_config()
-        self._api_key = api_key or config.gemini_api_key
-        self._model = None
-        self._current_model_name = None  # 当前使用的模型名称
-        self._using_fallback = False  # 是否正在使用备选模型
-        self._use_openai = False  # 是否使用 OpenAI 兼容 API
-        self._use_anthropic = False  # 是否使用 Anthropic Claude API
-        self._openai_client = None  # OpenAI 客户端
-        self._anthropic_client = None  # Anthropic 客户端
+        self._router = None
+        self._litellm_available = False
+        self._init_litellm()
+        if not self._litellm_available:
+            logger.warning("No LLM configured (LITELLM_MODEL / API keys), AI analysis will be unavailable")
 
-        # 检查 Gemini API Key 是否有效（过滤占位符）
-        gemini_key_valid = self._api_key and not self._api_key.startswith('your_') and len(self._api_key) > 10
+    @staticmethod
+    def _get_api_keys_for_model(model: str, config: Config) -> List[str]:
+        """Return API keys for a litellm model based on provider prefix."""
+        if model.startswith("gemini/") or model.startswith("vertex_ai/"):
+            return [k for k in config.gemini_api_keys if k and len(k) >= 8]
+        if model.startswith("anthropic/"):
+            return [k for k in config.anthropic_api_keys if k and len(k) >= 8]
+        return [k for k in config.openai_api_keys if k and len(k) >= 8]
 
-        # 优先级：Gemini > Anthropic > OpenAI
-        if gemini_key_valid:
-            try:
-                self._init_model()
-            except Exception as e:
-                logger.warning(f"Gemini init failed: {e}, trying Anthropic then OpenAI")
-                self._try_anthropic_then_openai()
-        else:
-            logger.info("Gemini API Key not configured, trying Anthropic then OpenAI")
-            self._try_anthropic_then_openai()
-
-        if not self._model and not self._anthropic_client and not self._openai_client:
-            logger.warning("No AI API Key configured, AI analysis will be unavailable")
-
-    def _try_anthropic_then_openai(self) -> None:
-        """优先尝试 Anthropic，其次 OpenAI 作为备选。两者均初始化以供运行时互为故障转移（如 Anthropic 429 时切 OpenAI）。"""
-        self._init_anthropic_fallback()
-        self._init_openai_fallback()
-
-    def _init_anthropic_fallback(self) -> None:
-        """
-        初始化 Anthropic Claude API 作为备选。
-
-        使用 Anthropic Messages API：https://docs.anthropic.com/en/api/messages
-        """
-        config = get_config()
-        anthropic_key_valid = (
-            config.anthropic_api_key
-            and not config.anthropic_api_key.startswith('your_')
-            and len(config.anthropic_api_key) > 10
-        )
-        if not anthropic_key_valid:
-            logger.debug("Anthropic API Key not configured or invalid")
-            return
-        try:
-            from anthropic import Anthropic
-
-            self._anthropic_client = Anthropic(api_key=config.anthropic_api_key)
-            self._current_model_name = config.anthropic_model
-            self._use_anthropic = True
-            logger.info(
-                f"Anthropic Claude API init OK (model: {config.anthropic_model})"
-            )
-        except ImportError:
-            logger.error("anthropic package not installed, run: pip install anthropic")
-        except Exception as e:
-            logger.error(f"Anthropic API init failed: {e}")
-
-    def _init_openai_fallback(self) -> None:
-        """
-        初始化 OpenAI 兼容 API 作为备选
-
-        支持所有 OpenAI 格式的 API，包括：
-        - OpenAI 官方
-        - DeepSeek
-        - 通义千问
-        - Moonshot 等
-        """
-        config = get_config()
-
-        # 检查 OpenAI API Key 是否有效（过滤占位符）
-        openai_key_valid = (
-            config.openai_api_key and
-            not config.openai_api_key.startswith('your_') and
-            len(config.openai_api_key) >= 8
-        )
-
-        if not openai_key_valid:
-            logger.debug("OpenAI 兼容 API 未配置或配置无效")
-            return
-
-        # 分离 import 和客户端创建，以便提供更准确的错误信息
-        try:
-            from openai import OpenAI
-        except ImportError:
-            logger.error("未安装 openai 库，请运行: pip install openai")
-            return
-
-        try:
-            # base_url 可选，不填则使用 OpenAI 官方默认地址
-            client_kwargs = {"api_key": config.openai_api_key}
-            if config.openai_base_url and config.openai_base_url.startswith('http'):
-                client_kwargs["base_url"] = config.openai_base_url
+    @staticmethod
+    def _extra_litellm_params(model: str, config: Config) -> dict:
+        """Build extra litellm params (api_base, headers) for OpenAI-compatible models."""
+        params: Dict[str, Any] = {}
+        if not model.startswith("gemini/") and not model.startswith("anthropic/") and not model.startswith("vertex_ai/"):
+            if config.openai_base_url:
+                params["api_base"] = config.openai_base_url
             if config.openai_base_url and "aihubmix.com" in config.openai_base_url:
-                client_kwargs["default_headers"] = {"APP-Code": "GPIJ3886"}
+                params["extra_headers"] = {"APP-Code": "GPIJ3886"}
+        return params
 
-            self._openai_client = OpenAI(**client_kwargs)
-            self._current_model_name = config.openai_model
-            self._use_openai = True
-            logger.info(f"OpenAI 兼容 API 初始化成功 (base_url: {config.openai_base_url}, model: {config.openai_model})")
-        except ImportError as e:
-            # 依赖缺失（如 socksio）
-            if 'socksio' in str(e).lower() or 'socks' in str(e).lower():
-                logger.error(f"OpenAI 客户端需要 SOCKS 代理支持，请运行: pip install httpx[socks] 或 pip install socksio")
-            else:
-                logger.error(f"OpenAI 依赖缺失: {e}")
-        except Exception as e:
-            error_msg = str(e).lower()
-            if 'socks' in error_msg or 'socksio' in error_msg or 'proxy' in error_msg:
-                logger.error(f"OpenAI 代理配置错误: {e}，如使用 SOCKS 代理请运行: pip install httpx[socks]")
-            else:
-                logger.error(f"OpenAI 兼容 API 初始化失败: {e}")
+    def _init_litellm(self) -> None:
+        """Initialize litellm Router (multi-key) or flag single-key availability."""
+        config = get_config()
+        litellm_model = config.litellm_model
+        if not litellm_model:
+            logger.warning("Analyzer LLM: LITELLM_MODEL not configured")
+            return
 
-    def _init_model(self) -> None:
-        """
-        初始化 Gemini 模型
+        keys = self._get_api_keys_for_model(litellm_model, config)
+        if not keys:
+            logger.warning(f"Analyzer LLM: No API keys found for model {litellm_model}")
+            return
 
-        配置：
-        - 使用 gemini-3-flash-preview 或 gemini-2.5-flash 模型
-        - 不启用 Google Search（使用外部 Tavily/SerpAPI 搜索）
-        """
-        try:
-            import google.generativeai as genai
+        self._litellm_available = True
 
-            # 配置 API Key
-            genai.configure(api_key=self._api_key)
-
-            # 从配置获取模型名称
-            config = get_config()
-            model_name = config.gemini_model
-            fallback_model = config.gemini_model_fallback
-
-            # 不再使用 Google Search Grounding（已知有兼容性问题）
-            # 改为使用外部搜索服务（Tavily/SerpAPI）预先获取新闻
-
-            # 尝试初始化主模型
-            try:
-                self._model = genai.GenerativeModel(
-                    model_name=model_name,
-                    system_instruction=self.SYSTEM_PROMPT,
-                )
-                self._current_model_name = model_name
-                self._using_fallback = False
-                logger.info(f"Gemini 模型初始化成功 (模型: {model_name})")
-            except Exception as model_error:
-                # 尝试备选模型
-                logger.warning(f"主模型 {model_name} 初始化失败: {model_error}，尝试备选模型 {fallback_model}")
-                self._model = genai.GenerativeModel(
-                    model_name=fallback_model,
-                    system_instruction=self.SYSTEM_PROMPT,
-                )
-                self._current_model_name = fallback_model
-                self._using_fallback = True
-                logger.info(f"Gemini 备选模型初始化成功 (模型: {fallback_model})")
-
-        except Exception as e:
-            logger.error(f"Gemini 模型初始化失败: {e}")
-            self._model = None
-
-    def _switch_to_fallback_model(self) -> bool:
-        """
-        切换到备选模型
-
-        Returns:
-            是否成功切换
-        """
-        try:
-            import google.generativeai as genai
-            config = get_config()
-            fallback_model = config.gemini_model_fallback
-
-            logger.warning(f"[LLM] 切换到备选模型: {fallback_model}")
-            self._model = genai.GenerativeModel(
-                model_name=fallback_model,
-                system_instruction=self.SYSTEM_PROMPT,
+        if len(keys) > 1:
+            extra_params = self._extra_litellm_params(litellm_model, config)
+            model_list = [
+                {
+                    "model_name": litellm_model,
+                    "litellm_params": {
+                        "model": litellm_model,
+                        "api_key": k,
+                        **extra_params,
+                    },
+                }
+                for k in keys
+            ]
+            self._router = Router(
+                model_list=model_list,
+                routing_strategy="simple-shuffle",
+                num_retries=2,
             )
-            self._current_model_name = fallback_model
-            self._using_fallback = True
-            logger.info(f"[LLM] 备选模型 {fallback_model} 初始化成功")
-            return True
-        except Exception as e:
-            logger.error(f"[LLM] 切换备选模型失败: {e}")
-            return False
+            models_in_router = list(dict.fromkeys(m["litellm_params"]["model"] for m in model_list))
+            logger.info(f"Analyzer LLM: Router initialized with {len(keys)} keys for {litellm_model} (models: {models_in_router})")
+        else:
+            logger.info(f"Analyzer LLM: litellm initialized (model={litellm_model})")
 
     def is_available(self) -> bool:
-        """检查分析器是否可用。"""
-        return (
-            self._model is not None
-            or self._anthropic_client is not None
-            or self._openai_client is not None
-        )
+        """Check if LiteLLM is properly configured with at least one API key."""
+        return self._router is not None or self._litellm_available
 
-    def _call_anthropic_api(self, prompt: str, generation_config: dict) -> str:
-        """
-        调用 Anthropic Claude Messages API。
+    def _call_litellm(self, prompt: str, generation_config: dict) -> str:
+        """Call LLM via litellm with fallback across configured models.
 
         Args:
-            prompt: 用户提示词
-            generation_config: 生成配置（temperature, max_output_tokens）
+            prompt: User prompt text.
+            generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
 
         Returns:
-            响应文本
+            Response text from LLM.
         """
         config = get_config()
-        max_retries = config.gemini_max_retries
-        base_delay = config.gemini_retry_delay
-        temperature = generation_config.get(
-            'temperature', config.anthropic_temperature
+        max_tokens = (
+            generation_config.get('max_output_tokens')
+            or generation_config.get('max_tokens')
+            or 8192
         )
-        max_tokens = generation_config.get('max_output_tokens', config.anthropic_max_tokens)
+        temperature = generation_config.get('temperature', 0.7)
 
-        for attempt in range(max_retries):
+        models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
+        models_to_try = [m for m in models_to_try if m]
+
+        last_error = None
+        for model in models_to_try:
+            keys = self._get_api_keys_for_model(model, config)
+            if not keys:
+                logger.debug(f"[LiteLLM] Skipping {model}: no API keys")
+                continue
             try:
-                if attempt > 0:
-                    delay = base_delay * (2 ** (attempt - 1))
-                    delay = min(delay, 60)
-                    logger.info(
-                        f"[Anthropic] Retry {attempt + 1}/{max_retries}, "
-                        f"waiting {delay:.1f}s..."
-                    )
-                    time.sleep(delay)
+                model_short = model.split("/")[-1] if "/" in model else model
+                call_kwargs: Dict[str, Any] = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+                extra = get_thinking_extra_body(model_short)
+                if extra:
+                    call_kwargs["extra_body"] = extra
 
-                message = self._anthropic_client.messages.create(
-                    model=self._current_model_name,
-                    max_tokens=max_tokens,
-                    system=self.SYSTEM_PROMPT,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                )
-                if (
-                    message.content
-                    and len(message.content) > 0
-                    and hasattr(message.content[0], 'text')
-                ):
-                    return message.content[0].text
-                raise ValueError("Anthropic API returned empty response")
-            except Exception as e:
-                error_str = str(e)
-                is_rate_limit = (
-                    '429' in error_str
-                    or 'rate' in error_str.lower()
-                    or 'quota' in error_str.lower()
-                )
-                if is_rate_limit:
-                    logger.warning(
-                        f"[Anthropic] Rate limit, attempt {attempt + 1}/"
-                        f"{max_retries}: {error_str[:100]}"
-                    )
+                if self._router and model == config.litellm_model:
+                    response = self._router.completion(**call_kwargs)
                 else:
-                    logger.warning(
-                        f"[Anthropic] API failed, attempt {attempt + 1}/"
-                        f"{max_retries}: {error_str[:100]}"
-                    )
-                if attempt == max_retries - 1:
-                    raise
-        raise Exception("Anthropic API failed after max retries")
-
-    def _call_openai_api(self, prompt: str, generation_config: dict) -> str:
-        """
-        调用 OpenAI 兼容 API
-
-        Args:
-            prompt: 提示词
-            generation_config: 生成配置
-
-        Returns:
-            响应文本
-        """
-        config = get_config()
-        max_retries = config.gemini_max_retries
-        base_delay = config.gemini_retry_delay
-
-        def _build_base_request_kwargs() -> dict:
-            # OpenAI-compatible path (DeepSeek, Qwen, etc.): add extra_body for thinking models
-            model_name = self._current_model_name
-            kwargs = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": generation_config.get('temperature', config.openai_temperature),
-            }
-            payload = get_thinking_extra_body(model_name)
-            if payload:
-                kwargs["extra_body"] = payload
-            return kwargs
-
-        def _is_unsupported_param_error(error_message: str, param_name: str) -> bool:
-            lower_msg = error_message.lower()
-            return ('400' in lower_msg or "unsupported parameter" in lower_msg or "unsupported param" in lower_msg) and param_name in lower_msg
-
-        if not hasattr(self, "_token_param_mode"):
-            self._token_param_mode = {}
-
-        max_output_tokens = generation_config.get('max_output_tokens', 8192)
-        model_name = self._current_model_name
-        mode = self._token_param_mode.get(model_name, "max_tokens")
-
-        def _kwargs_with_mode(mode_value):
-            kwargs = _build_base_request_kwargs()
-            if mode_value is not None:
-                kwargs[mode_value] = max_output_tokens
-            return kwargs
-
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    delay = base_delay * (2 ** (attempt - 1))
-                    delay = min(delay, 60)
-                    logger.info(f"[OpenAI] 第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
-                    time.sleep(delay)
-
-                try:
-                    response = self._openai_client.chat.completions.create(**_kwargs_with_mode(mode))
-                except Exception as e:
-                    error_str = str(e)
-                    if mode == "max_tokens" and _is_unsupported_param_error(error_str, "max_tokens"):
-                        mode = "max_completion_tokens"
-                        self._token_param_mode[model_name] = mode
-                        response = self._openai_client.chat.completions.create(**_kwargs_with_mode(mode))
-                    elif mode == "max_completion_tokens" and _is_unsupported_param_error(error_str, "max_completion_tokens"):
-                        mode = None
-                        self._token_param_mode[model_name] = mode
-                        response = self._openai_client.chat.completions.create(**_kwargs_with_mode(mode))
-                    else:
-                        raise
+                    call_kwargs["api_key"] = keys[0]
+                    call_kwargs.update(self._extra_litellm_params(model, config))
+                    response = litellm.completion(**call_kwargs)
 
                 if response and response.choices and response.choices[0].message.content:
                     return response.choices[0].message.content
-                else:
-                    raise ValueError("OpenAI API 返回空响应")
-                    
-            except Exception as e:
-                error_str = str(e)
-                is_rate_limit = '429' in error_str or 'rate' in error_str.lower() or 'quota' in error_str.lower()
-                
-                if is_rate_limit:
-                    logger.warning(f"[OpenAI] API 限流，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
-                else:
-                    logger.warning(f"[OpenAI] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
-                
-                if attempt == max_retries - 1:
-                    raise
-        
-        raise Exception("OpenAI API 调用失败，已达最大重试次数")
-    
-    def _call_api_with_retry(self, prompt: str, generation_config: dict) -> str:
-        """
-        调用 AI API，带有重试和模型切换机制
-        
-        优先级：Gemini > Gemini 备选模型 > OpenAI 兼容 API
-        
-        处理 429 限流错误：
-        1. 先指数退避重试
-        2. 多次失败后切换到备选模型
-        3. Gemini 完全失败后尝试 OpenAI
-        
-        Args:
-            prompt: 提示词
-            generation_config: 生成配置
-            
-        Returns:
-            响应文本
-        """
-        # 若使用 Anthropic，调用 Anthropic（失败时回退到 OpenAI）
-        if self._use_anthropic:
-            try:
-                return self._call_anthropic_api(prompt, generation_config)
-            except Exception as anthropic_error:
-                if self._openai_client:
-                    logger.warning(
-                        "[Anthropic] All retries failed, falling back to OpenAI"
-                    )
-                    return self._call_openai_api(prompt, generation_config)
-                raise anthropic_error
+                raise ValueError("LLM returned empty response")
 
-        # 若使用 OpenAI（仅当无 Anthropic 时为主选）
-        if self._use_openai:
-            return self._call_openai_api(prompt, generation_config)
-
-        config = get_config()
-        max_retries = config.gemini_max_retries
-        base_delay = config.gemini_retry_delay
-        
-        last_error = None
-        tried_fallback = getattr(self, '_using_fallback', False)
-        
-        for attempt in range(max_retries):
-            try:
-                # 请求前增加延时（防止请求过快触发限流）
-                if attempt > 0:
-                    delay = base_delay * (2 ** (attempt - 1))  # 指数退避: 5, 10, 20, 40...
-                    delay = min(delay, 60)  # 最大60秒
-                    logger.info(f"[Gemini] 第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
-                    time.sleep(delay)
-                
-                response = self._model.generate_content(
-                    prompt,
-                    generation_config=generation_config,
-                    request_options={"timeout": 120}
-                )
-                
-                if response and response.text:
-                    return response.text
-                else:
-                    raise ValueError("Gemini 返回空响应")
-                    
             except Exception as e:
+                logger.warning(f"[LiteLLM] {model} failed: {e}")
                 last_error = e
-                error_str = str(e)
-                
-                # 检查是否是 429 限流错误
-                is_rate_limit = '429' in error_str or 'quota' in error_str.lower() or 'rate' in error_str.lower()
-                
-                if is_rate_limit:
-                    logger.warning(f"[Gemini] API 限流 (429)，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
-                    
-                    # 如果已经重试了一半次数且还没切换过备选模型，尝试切换
-                    if attempt >= max_retries // 2 and not tried_fallback:
-                        if self._switch_to_fallback_model():
-                            tried_fallback = True
-                            logger.info("[Gemini] 已切换到备选模型，继续重试")
-                        else:
-                            logger.warning("[Gemini] 切换备选模型失败，继续使用当前模型重试")
-                else:
-                    # 非限流错误，记录并继续重试
-                    logger.warning(f"[Gemini] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
-        
-        # Gemini 重试耗尽，尝试 Anthropic 再 OpenAI
-        if self._anthropic_client:
-            logger.warning("[Gemini] All retries failed, switching to Anthropic")
-            try:
-                return self._call_anthropic_api(prompt, generation_config)
-            except Exception as anthropic_error:
-                logger.warning(
-                    f"[Anthropic] Fallback failed: {anthropic_error}"
-                )
-                if self._openai_client:
-                    logger.warning("[Gemini] Trying OpenAI as final fallback")
-                    try:
-                        return self._call_openai_api(prompt, generation_config)
-                    except Exception as openai_error:
-                        logger.error(
-                            f"[OpenAI] Final fallback also failed: {openai_error}"
-                        )
-                        raise last_error or anthropic_error or openai_error
-                raise last_error or anthropic_error
+                continue
 
-        if self._openai_client:
-            logger.warning("[Gemini] All retries failed, switching to OpenAI")
-            try:
-                return self._call_openai_api(prompt, generation_config)
-            except Exception as openai_error:
-                logger.error(f"[OpenAI] Fallback also failed: {openai_error}")
-                raise last_error or openai_error
-        # 懒加载 Anthropic，再尝试 OpenAI
-        if config.anthropic_api_key and not self._anthropic_client:
-            logger.warning("[Gemini] Trying lazy-init Anthropic API")
-            self._init_anthropic_fallback()
-            if self._anthropic_client:
-                try:
-                    return self._call_anthropic_api(prompt, generation_config)
-                except Exception as ae:
-                    logger.warning(f"[Anthropic] Lazy fallback failed: {ae}")
-                    if self._openai_client:
-                        try:
-                            return self._call_openai_api(prompt, generation_config)
-                        except Exception as oe:
-                            raise last_error or ae or oe
-                    raise last_error or ae
-        if config.openai_api_key and not self._openai_client:
-            logger.warning("[Gemini] Trying lazy-init OpenAI API")
-            self._init_openai_fallback()
-            if self._openai_client:
-                try:
-                    return self._call_openai_api(prompt, generation_config)
-                except Exception as openai_error:
-                    logger.error(f"[OpenAI] Lazy fallback also failed: {openai_error}")
-                    raise last_error or openai_error
-
-        # 所有备选均耗尽
-        raise last_error or Exception("所有 AI API 调用失败，已达最大重试次数")
+        raise Exception(f"All LLM models failed (tried {len(models_to_try)} model(s)). Last error: {last_error}")
     
     def analyze(
         self, 
@@ -1064,59 +705,47 @@ class GeminiAnalyzer:
                 operation_advice='持有',
                 confidence_level='低',
                 analysis_summary='AI 分析功能未启用（未配置 API Key）',
-                risk_warning='请配置 Gemini API Key 后重试',
+                risk_warning='请配置 LLM API Key（GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY）后重试',
                 success=False,
-                error_message='Gemini API Key 未配置',
+                error_message='LLM API Key 未配置',
             )
         
         try:
             # 格式化输入（包含技术面数据和新闻）
             prompt = self._format_prompt(context, name, news_context)
             
-            # 获取模型名称
-            model_name = getattr(self, '_current_model_name', None)
-            if not model_name:
-                model_name = getattr(self._model, '_model_name', 'unknown')
-                if hasattr(self._model, 'model_name'):
-                    model_name = self._model.model_name
-            
+            config = get_config()
+            model_name = config.litellm_model or "unknown"
             logger.info(f"========== AI 分析 {name}({code}) ==========")
             logger.info(f"[LLM配置] 模型: {model_name}")
             logger.info(f"[LLM配置] Prompt 长度: {len(prompt)} 字符")
             logger.info(f"[LLM配置] 是否包含新闻: {'是' if news_context else '否'}")
-            
+
             # 记录完整 prompt 到日志（INFO级别记录摘要，DEBUG记录完整）
             prompt_preview = prompt[:500] + "..." if len(prompt) > 500 else prompt
             logger.info(f"[LLM Prompt 预览]\n{prompt_preview}")
             logger.debug(f"=== 完整 Prompt ({len(prompt)}字符) ===\n{prompt}\n=== End Prompt ===")
 
-            # 设置生成配置（从配置文件读取温度参数）
-            config = get_config()
+            # 设置生成配置
             generation_config = {
                 "temperature": config.gemini_temperature,
                 "max_output_tokens": 8192,
             }
 
-            # 记录实际使用的 API 提供方
-            api_provider = (
-                "OpenAI" if self._use_openai
-                else "Anthropic" if self._use_anthropic
-                else "Gemini"
-            )
-            logger.info(f"[LLM调用] 开始调用 {api_provider} API...")
-            
-            # 使用带重试的 API 调用
+            logger.info(f"[LLM调用] 开始调用 {model_name}...")
+
+            # 使用 litellm 调用
             start_time = time.time()
-            response_text = self._call_api_with_retry(prompt, generation_config)
+            response_text = self._call_litellm(prompt, generation_config)
             elapsed = time.time() - start_time
 
             # 记录响应信息
-            logger.info(f"[LLM返回] {api_provider} API 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
+            logger.info(f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
             
             # 记录响应预览（INFO级别）和完整响应（DEBUG级别）
             response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
             logger.info(f"[LLM返回 预览]\n{response_preview}")
-            logger.debug(f"=== {api_provider} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ===")
+            logger.debug(f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ===")
             
             # 解析响应
             result = self._parse_response(response_text, code, name)
@@ -1317,7 +946,8 @@ class GeminiAnalyzer:
 
 """
         prompt += f"""
-### ⚠️ 重要：股票名称确认
+### ⚠️ 重要：输出正确的股票名称格式
+正确的股票名称格式为“股票名称（股票代码）”，例如“贵州茅台（600519）”。
 如果上方显示的股票名称为"股票{code}"或不正确，请在分析开头**明确输出该股票的正确中文全称**。
 
 ### 重点关注（必须明确回答）：

@@ -212,6 +212,108 @@ def markdown_to_html_document(markdown_text: str) -> str:
         """
 
 
+def markdown_to_plain_text(markdown_text: str) -> str:
+    """
+    将 Markdown 转换为纯文本
+    
+    移除 Markdown 格式标记，保留可读性
+    """
+    text = markdown_text
+    
+    # 移除标题标记 # ## ###
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    
+    # 移除加粗 **text** -> text
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    
+    # 移除斜体 *text* -> text
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    
+    # 移除引用 > text -> text
+    text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
+    
+    # 移除列表标记 - item -> item
+    text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
+    
+    # 移除分隔线 ---
+    text = re.sub(r'^---+$', '────────', text, flags=re.MULTILINE)
+    
+    # 移除表格语法 |---|---|
+    text = re.sub(r'\|[-:]+\|[-:|\s]+\|', '', text)
+    text = re.sub(r'^\|(.+)\|$', r'\1', text, flags=re.MULTILINE)
+    
+    # 清理多余空行
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
+
+def chunk_markdown_by_bytes(content: str, max_bytes: int) -> List[str]:
+    def get_bytes(s: str) -> int:
+        return len(s.encode('utf-8'))
+
+    def split_by_bytes(text: str, limit: int) -> List[str]:
+        parts: List[str] = []
+        remaining = text
+        while remaining:
+            part = truncate_to_bytes(remaining, limit)
+            if not part:
+                break
+            parts.append(part)
+            remaining = remaining[len(part):]
+        return parts
+
+    # 优先按分隔线/标题分割，保证分页自然
+    if "\n---\n" in content:
+        sections = content.split("\n---\n")
+        separator = "\n---\n"
+    elif "\n### " in content:
+        parts = content.split("\n### ")
+        sections = [parts[0]] + [f"### {p}" for p in parts[1:]]
+        separator = "\n"
+    else:
+        # fallback：按行拼接
+        sections = content.split("\n")
+        separator = "\n"
+
+    chunks: List[str] = []
+    current_chunk: List[str] = []
+    current_bytes = 0
+    sep_bytes = get_bytes(separator)
+
+    for section in sections:
+        section_bytes = get_bytes(section)
+        extra = sep_bytes if current_chunk else 0
+
+        # 单段超长：截断
+        if section_bytes + extra > max_bytes:
+            if current_chunk:
+                chunks.append(separator.join(current_chunk))
+                current_chunk = []
+                current_bytes = 0
+
+            # 无法按结构拆分时，按字节强制拆分，避免整段被截断丢失
+            for part in split_by_bytes(section, max(200, max_bytes - 200)):
+                chunks.append(part)
+            continue
+
+        if current_bytes + section_bytes + extra > max_bytes:
+            chunks.append(separator.join(current_chunk))
+            current_chunk = [section]
+            current_bytes = section_bytes
+        else:
+            if current_chunk:
+                current_bytes += sep_bytes
+            current_chunk.append(section)
+            current_bytes += section_bytes
+
+    if current_chunk:
+        chunks.append(separator.join(current_chunk))
+
+    # 移除空块
+    return [c for c in (c.strip() for c in chunks) if c]
+
+
 def format_feishu_markdown(content: str) -> str:
     """
     将通用 Markdown 转换为飞书 lark_md 更友好的格式
@@ -305,6 +407,32 @@ def format_feishu_markdown(content: str) -> str:
         _flush_table_rows(table_buffer, lines)
 
     return "\n".join(lines).strip()
+
+
+def truncate_to_bytes(text: str, max_bytes: int) -> str:
+    """
+    按字节数截断字符串，确保不会在多字节字符中间截断
+
+    Args:
+        text: 要截断的字符串
+        max_bytes: 最大字节数
+
+    Returns:
+        截断后的字符串
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+
+    # 从 max_bytes 位置往前找，确保不截断多字节字符
+    truncated = encoded[:max_bytes]
+    # 尝试解码，如果失败则继续往前
+    while truncated:
+        try:
+            return truncated.decode("utf-8")
+        except UnicodeDecodeError:
+            truncated = truncated[:-1]
+    return ""
 
 
 def _chunk_by_lines(content: str, max_bytes: int, send_func: Callable[[str], bool]) -> bool:
@@ -469,6 +597,7 @@ def chunk_feishu_content(content: str, max_bytes: int, send_func: Callable[[str]
             time.sleep(1)
     
     return success_count == total_chunks
+
 
 def _chunk_by_separators(content: str) -> tuple[list[str], str]:
     """

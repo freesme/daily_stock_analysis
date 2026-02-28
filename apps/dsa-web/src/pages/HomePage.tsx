@@ -5,7 +5,7 @@ import type { HistoryItem, AnalysisReport, TaskInfo } from '../types/analysis';
 import { historyApi } from '../api/history';
 import { analysisApi, DuplicateTaskError } from '../api/analysis';
 import { validateStockCode } from '../utils/validation';
-import { getRecentStartDate, toDateInputValue } from '../utils/format';
+import { getRecentStartDate, getTodayInShanghai } from '../utils/format';
 import { useAnalysisStore } from '../stores/analysisStore';
 import { ReportSummary } from '../components/report';
 import { HistoryList } from '../components/history';
@@ -111,20 +111,14 @@ const HomePage: React.FC = () => {
       }
     }
 
+    // page is always 1 when reset=true, regardless of currentPageRef; the ref
+    // is only used for load-more (reset=false) to get the next page number.
     const page = reset ? 1 : currentPageRef.current + 1;
 
     try {
-      // TODO: Proper timezone handling needed
-      // Using tomorrow as endDate is a temporary workaround to include today's records.
-      // This may incorrectly include tomorrow's data and is semantically inconsistent across timezones.
-      // Better solution: standardize backend & frontend to use UTC or fixed timezone (Asia/Shanghai),
-      // or construct endDate on frontend as end-of-day timestamp.
-      const tomorrowDate = new Date();
-      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-
       const response = await historyApi.getList({
         startDate: getRecentStartDate(30),
-        endDate: toDateInputValue(tomorrowDate),
+        endDate: getTodayInShanghai(),
         page,
         limit: pageSize,
       });
@@ -207,17 +201,21 @@ const HomePage: React.FC = () => {
 
   // 点击历史项加载报告
   const handleHistoryClick = async (recordId: number) => {
-    // 取消当前分析请求的结果显示（通过递增 requestId）
-    analysisRequestIdRef.current += 1;
+    // Increment request ID to cancel any in-flight auto-select result.
+    const requestId = ++analysisRequestIdRef.current;
 
-    setIsLoadingReport(true);
+    // Keep the current report visible while
+    // the new one loads so the right panel doesn't flash a blank spinner on
+    // every click. isLoadingReport is only used for the initial empty state.
     try {
       const report = await historyApi.getDetail(recordId);
-      setSelectedReport(report);
+      // Ignore result if a newer click has already been issued.
+      if (requestId === analysisRequestIdRef.current) {
+        setSelectedReport(report);
+      }
     } catch (err) {
       console.error('Failed to fetch report:', err);
-    } finally {
-      setIsLoadingReport(false);
+      setStoreError(err instanceof Error ? err.message : '报告加载失败');
     }
   };
 
