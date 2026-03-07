@@ -1,159 +1,128 @@
 # Changelog
 
-所有重要更改都会记录在此文件中。
+All notable changes to this project will be documented in this file.
 
-格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
-版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/).
+
+> For user-friendly release highlights, see the [GitHub Releases](https://github.com/ZhuLinsen/daily_stock_analysis/releases) page.
 
 ## [Unreleased]
-- 🧠 新增 A股/美股大盘分析策略系统：复盘 Prompt 注入区域化策略蓝图，并在输出中增加“策略计划”章节，统一给出仓位与风险触发条件建议。
 
-### 修复（#patch）
-- 🐛 **Agent 模式下部分报告显示占位股票名**（Issue #463）
-  - 根因：`_agent_result_to_analysis_result` 未回填 Agent dashboard 返回的 `stock_name`，后续新闻检索与持久化继续使用 `股票+代码` 占位名称
-  - 修复：当输入名称为占位值时，优先使用 dashboard `stock_name`；并统一将回填后的名称用于 `search_stock_news` 与 `save_news_intel`
-  - 测试：新增回归用例覆盖占位名回填、有效名称不覆盖、以及 Agent 流程中的新闻检索/入库名称一致性
-- 🐛 **Web 服务启动自动构建前端静态资源**
-  - `main.py` 在 `--serve/--serve-only`（含 `--webui/--webui-only`）模式启动前，自动执行 `apps/dsa-web` 下的 `npm install && npm run build`
-  - 新增环境变量 `WEBUI_AUTO_BUILD`（默认 `true`），可关闭自动构建并改为手动构建
-- 🐛 **首页历史记录列表滚动跳回顶部**（Issue #429）
-  - `fetchHistory` 引用不稳定导致加载更多后 useEffect 重新执行 reset 列表
-  - 改用 `useRef` 追踪易变状态，稳定 `fetchHistory` 引用；后台刷新合并新增项而非替换整个列表
-- 🐛 **设置页保存按钮误亮**（Issue #417）
-  - Chrome 自动填充密码到 `type="password"` 输入框，触发 dirty 状态误判
-  - 密码输入框初始设为 readOnly，用户聚焦时解除，阻止浏览器自动填充
+## [3.4.9] - 2026-03-06
 
-### 新增（#minor）
-- 🚀 **桌面端 CI 自动发布到 GitHub Releases**
-  - 新增 `.github/workflows/desktop-release.yml`
-  - 支持 Windows 安装包（exe）+ 免安装包（zip）与 macOS x64/arm64 DMG 并行构建
-  - 支持 tag 触发自动发布，以及手动指定 `release_tag` 发布
-- 📈 **盘中实时技术面**（Issue #234）
-  - 技术面数据（MA5/MA10/MA20、多头排列）使用盘中实时价格计算，而非昨日收盘
-  - 盘中分析时，将实时价作为虚拟 K 线追加到历史序列，重算均线与趋势判断
-  - 报告「今日行情」与「均线系统」与当前价格一致，多头排列判断不再滞后
-  - 配置项：`ENABLE_REALTIME_TECHNICAL_INDICATORS`（默认 `true`）；设为 `false` 可回退为昨日收盘逻辑
-  - 非交易日或 `enable_realtime_quote` 关闭时保持原有行为
-- 📢 **PushPlus 群组推送**：新增 `PUSHPLUS_TOPIC` 配置项，支持一对多群组推送，配置群组编码后消息推送给群组所有订阅用户
-- 📢 **Discord 分段发送**：新增 `DISCORD_MAX_WORDS` 配置项，支持将长文字按段落或字数只能分割后，分段发送。
-- 📅 **交易日判断**（Issue #373）
-  - 默认非交易日不执行分析，按 A 股 / 港股 / 美股各自交易日历区分
-  - 混合持仓时，每只股票只在其市场开市日分析，休市股票当日跳过
-  - 全部相关市场休市时，整体跳过执行（不启动 pipeline、不发推送）
-  - 依赖 `exchange-calendars`（A 股 XSHG、港股 XHKG、美股 XNYS）
-  - 配置项：`TRADING_DAY_CHECK_ENABLED`（默认 `true`）
-  - 覆盖方式：`--force-run` 或 `TRADING_DAY_CHECK_ENABLED=false`
-- 🤖 **Agent 策略问股**（全链路，#367）
-  - **API**：新增 `/api/v1/agent/strategies`（获取策略列表）与 `/api/v1/agent/chat/stream`（SSE 流式对话）
-  - **核心**：`src/agent/`（AgentExecutor ReAct 循环、LLMToolAdapter 多厂商适配、ConversationManager 会话持久化、ToolRegistry 工具注册）
-  - **内置策略**：11 种 YAML 策略（多头趋势、均线金叉、量价突破、缩量回踩、缠论、波浪理论、情绪周期、箱体震荡、龙头策略、一阳三阴、底部放量）
-  - **Web**：`/chat` 页面支持策略选择、流式进度反馈、多轮追问、从历史报告跳转追问
-  - **Bot**：`/ask <code> [strategy]` 命令触发策略分析，`/chat` 命令进入多轮对话
-  - **流水线接入**：`AGENT_MODE=true` 时 pipeline 自动路由至 Agent 分析分支，向下兼容
-  - **配置项**：`AGENT_MODE`、`AGENT_MAX_STEPS`、`AGENT_STRATEGY_DIR`
-  - **兼容性**：`AGENT_MODE` 默认 false，不影响现有非 Agent 模式；回滚只需将 `AGENT_MODE` 设为 false
-- 💬 **聊天历史持久化**（Issue #400）
-  - `/chat` 页面支持会话历史记录，刷新或重新进入页面后可恢复之前的对话
-  - 侧边栏展示历史会话列表，支持切换、新建和删除会话（含二次确认）
-  - 后端新增 3 个 REST API：会话列表、会话消息查询、会话删除
-  - 基于已有 `conversation_messages` 表聚合，无需数据库迁移
-  - `session_id` 通过 localStorage 持久化，跨页面刷新保持会话连续性
-- ⚙️ **Agent 工具链能力增强**
-  - 扩展 `analysis_tools` 与 `data_tools`，优化策略问股的工具调用链路与分析覆盖
-- 📡 **LiteLLM 直接集成 + 多 API Key 支持**（#minor）
-  - 移除 google-generativeai、google-genai、anthropic 原生 SDK；统一通过 `litellm>=1.80.10` 调用所有 LLM
-  - 新增 `LITELLM_MODEL`（主模型，必须含 provider 前缀）、`LITELLM_FALLBACK_MODELS`（跨模型降级）配置项
-  - 新增 `GEMINI_API_KEYS`、`ANTHROPIC_API_KEYS`、`OPENAI_API_KEYS` 多 Key 解析，逗号分隔；单 Key 用户无需修改
-  - 多 Key 时自动构建 LiteLLM Router（`simple-shuffle`），同一模型多 Key 轮换 + 429 自动冷却
-  - 跨模型降级（LITELLM_FALLBACK_MODELS）与 Router 多 Key 轮换分层独立，互不干扰
-  - `image_stock_extractor` 改用 litellm vision（OpenAI image_url 格式），保留 Gemini 3 视觉模型降级逻辑
-  - `analyzer._call_api_with_retry` 重命名为 `_call_litellm`，`_token_param_mode` 逻辑删除（litellm 统一处理 max_tokens）
-  - `market_analyzer` 不再直接访问 `analyzer._use_openai` / `_model` 等私有成员
-  - `registry.to_gemini_declarations()` / `to_anthropic_tools()` 死代码删除；tool 声明统一走 OpenAI 格式
-  - `executor.tool_decls` 简化为 `to_openai_tools()` 列表，移除 gemini/anthropic 键
-  - `.env` 变更：旧格式的 `GEMINI_MODEL`（无前缀）仅用于 `LITELLM_MODEL` 未配置时的自动推断；显式配置必须加前缀
-  - 回滚方案：将 `litellm>=1.80.10` 替换回原生 SDK 并还原此 commit
+### Added
+- 🧠 **Structured config validation** — `ConfigIssue` dataclass and `validate_structured()` with severity-aware logging; `CONFIG_VALIDATE_MODE=strict` aborts startup on errors
+- 🖼️ **Vision model config** — `VISION_MODEL` and `VISION_PROVIDER_PRIORITY` for image stock extraction; provider fallback (Gemini → Anthropic → OpenAI → DeepSeek) when primary fails
+- 🚀 **CLI init wizard** — `python -m dsa init` 3-step interactive bootstrap (model → data source → notification), 9 provider presets, incremental merge by default
+- 🔧 **Multi-channel LLM support** with visual channel editor (#494)
 
-### 修复（#patch）
-- 🐛 **Bocha 搜索瞬时 SSL/网络错误重试**
-  - 现象：用户报 SSLError(SSLEOFError) 导致博查搜索一次失败即返回
-  - 根因：对瞬时 SSL/网络错误（SSLError、ConnectionError、Timeout 等）无重试
-  - 修复：新增 `_post_with_retry` 辅助函数，使用 tenacity 对博查 HTTP 请求做最多 3 次重试（指数退避 1–10s）
-  - 兼容性：无破坏性变更，行为对用户透明
-- 🐛 **移动端首页无法滑动查看溢出内容**（Issue #419）
-  - 现象：手机浏览器访问首页时，报告内容超出屏幕但无法左右滑动，也没有滚动条
-  - 根因：外层容器 `overflow-hidden` 禁止所有溢出滚动；5 列 CSS Grid 为固定宽度，无移动端断点适配
-  - 修复：移动端改为单列 Flex 布局，左侧边栏改为抽屉式弹出（与问股页面一致），报告区域添加 `overflow-x-auto` 允许横向滚动
-  - 兼容性：桌面端布局无变化
-- 🐛 **修复桌面端打包后 FastAPI 缺少 `python-multipart`**
-  - 现象：桌面客户端启动时报错 `Form data requires "python-multipart" to be installed`
-  - 根因：`python-multipart` 由 FastAPI 在运行时检查，且 Windows 打包脚本中 `pip` 与 `pyinstaller` 可能来自不同 Python 环境，导致 `multipart` 未被收录
-  - 修复：为后端打包流程补充 `multipart` / `multipart.multipart` 隐式导入，并统一改为 `python -m PyInstaller`（Windows / macOS 打包脚本）
-  - 兼容性：无破坏性变更，仅影响桌面端打包产物
-- 🐛 **Agent 策略渲染遗漏 framework 分类**（Issue #403）
-  - 根因：`get_skill_instructions()` 仅遍历 `trend/pattern/reversal` 三个分类，`category: framework` 的 4 个策略（箱体震荡、缠论、波浪理论、情绪周期）被静默丢弃
-  - 修复：补充 `framework` 分类，并增加动态回退机制，确保未来自定义分类不会遗漏
-  - 文档：`.env.example` 补充 `AGENT_SKILLS=all` 写法，`README.md` 配置表新增 `AGENT_SKILLS`
-  - Docker：Dockerfile 补充 `COPY strategies/`，docker-compose.yml 挂载 `strategies/` 目录（此前容器内策略目录缺失，导致所有策略均无法加载）
-- 🐛 **支持 DeepSeek 思考模式**（Issue #379）
-  - 根因：Agent 模式（tool calls）下使用 DeepSeek 思考模式时，未在 assistant 消息中回传 `reasoning_content`，导致 API 返回 400
-  - 修复：`llm_adapter._call_openai` 解析并透传 `reasoning_content`；`executor` 在 assistant_msg 中写入该字段
-  - 按模型名自动识别：`deepseek-reasoner`、`deepseek-r1`、`qwq` 等自动返回 reasoning_content，不发送 extra_body；`deepseek-chat` 需显式启用，系统自动处理
-  - 兼容性：非 DeepSeek 提供商不受影响；用户无需配置，无破坏性变更
-- 🐛 **Agent Reasoning 400 修复**（Fixes #409）
-  - 根因：Gemini 3、DeepSeek 等 Reasoning 模型在工具调用响应中返回 `thought_signature`，多轮对话未回传导致代理返回 400
-  - 修复（OpenAI 兼容路径）：`llm_adapter._call_openai` 解析并透传 `provider_specific_fields.thought_signature`；`executor` 在 assistant_msg 的 tool_calls 中写入该字段
-  - 修复（原生 Gemini 路径）：`llm_adapter._call_gemini` 迁移至 `google-genai` 新 SDK（旧 `google-generativeai` SDK 不定义 Part.thought_signature，unknown fields 被静默丢弃）；新 SDK 正确解析 Part 级别 `thought_signature`（bytes），base64 编码后存入 `ToolCall.thought_signature`，回传时 base64 解码写回 Part
-  - 修复（工具声明类型）：`registry.to_gemini_declaration()` 将 Protobuf 大写类型（`OBJECT`/`STRING`）更正为 JSON Schema 小写类型（`object`/`string`），以兼容新 SDK 的 `parameters_json_schema`
-  - 修复（命名空间工具名）：`registry.execute` 支持 Gemini 命名空间工具名（如 `default_api:get_realtime_quote` → `get_realtime_quote`）
-  - 注：原生 Gemini SDK 路径已在后续 LiteLLM 直接集成中迁移，thought_signature 现由 litellm 透传
-  - 兼容性：非 Reasoning 模型不受影响
-- 🐛 **Agent 模式下报告页「相关资讯」为空**（Issue #396）
-  - 根因：Agent 工具结果仅用于 LLM 上下文，未写入 `news_intel`，前端 `GET /api/v1/history/{query_id}/news` 查询不到数据
-  - 修复：在 `_analyze_with_agent` 中 Agent 运行结束后，调用 `search_stock_news` 并持久化（仅 1 次 API 调用，与 Agent 工具逻辑一致，无额外延迟）
-  - 兼容性：无破坏性变更，Agent 模式下报告页「相关资讯」可正常展示
-- 🐛 **修复 HTTP 非安全上下文下 /chat 页面黑屏**（Issue #377）
-  - `crypto.randomUUID()` 仅在 HTTPS/localhost 安全上下文中可用，通过 `http://IP:port` 访问时页面崩溃黑屏
-  - 新增 `apps/dsa-web/src/utils/uuid.ts`，提供带 fallback 的 `generateUUID()` 工具函数
-  - `ChatPage.tsx` 中的 session ID 生成改为调用 `generateUUID()`，兼容 HTTP 访问场景
-- 🐛 **Docker 网络/DNS 解析失败** (Issue #372)
-  - `docker-compose.yml` 增加 host 模式下 `--port` 与端口映射关系的注释说明
-  - FAQ 新增 Q14.1：Docker 中 DNS 解析失败时的排查步骤（显式 DNS 配置、host 网络模式兜底）
-- 🐛 **Agent 对话 Bug 修复**（#367 review follow-up）
-  - 修复 `bot/commands/ask.py` 中 `list_strategies()` 方法不存在导致策略名称回显失败，改为 `list_skills()` 正确属性访问
-  - 修复 `session_id` 缺省值为 `"default_session"` 导致多用户/多标签页会话串用，改为每次生成 UUID
-  - 修复 LLM 失败时对话消息不落库，下一轮上下文断层；现在成功/失败均写入历史
-  - `asyncio.get_event_loop()` 改为 Python 3.10+ 推荐的 `get_running_loop()`
-  - `storage.py` 中 `session.query()` 改为 SQLAlchemy 2.x 风格 `session.execute(select(...))`
-  - `ChatPage.tsx` 消除所有 `@typescript-eslint/no-explicit-any` 报错，引入 `FollowUpContext`、`ChatStreamPayload` 接口
-  - Agent 进度提示从「第 N 步：AI 正在思考...」改为具体动作描述（如「行情获取」已完成，继续深入分析...）
-- 🐛 **Agent 对话会话存储与默认策略修复**
-  - 修复 `DatabaseManager` 缺失 `session_scope` 导致 `/api/v1/agent/chat` 返回 500 的问题
-  - 修复会话历史读取的数据结构不一致问题，避免多轮对话中断
-  - 新增内置默认多头策略 `bull_trend`，并将默认策略收敛为更适合常规个股分析的组合
-  - Web 端对话页文案调整为“策略对话”，并默认勾选多头相关策略，降低使用门槛
-- 🐛 **Dashboard 嵌套映射与测试硬编码修复**
-  - 修复 Dashboard 端策略结果映射中的嵌套结构解析问题，避免展示异常
-  - 修复测试中的硬编码数据，减少因固定值导致的回归误报
-- 🐛 **yfinance 并行下载股票代码问题修复**
-  - 增加了代码逻辑，根据当前股票代码筛选并提取下载的数据，解决dataframe里出现多个股票的数据，造成后续数据处理出错。
+### Changed
+- ♻️ **Vision extraction** — migrated from gemini-3 hardcode to `litellm.completion()` with configurable model and provider fallback; `OPENAI_VISION_MODEL` deprecated in favor of `VISION_MODEL`
+- ♻️ **Market analyzer** — uses `Analyzer.generate_text()` for LLM calls; fixes bypass and Anthropic `AttributeError` when using non-Router path
+- ♻️ **Config validation refinements** — test_env output format syncs with `validate_structured` (severity-aware ✓/✗/⚠/·); Vision key warning when `VISION_MODEL` set but no provider API key; market_analyzer test covers `generate_market_review` fallback when `generate_text` returns None
+- ⚙️ **Auto-tag workflow defaults to NO tag** — only tags when commit message explicitly contains `#patch`, `#minor`, or `#major`
+- ♻️ **Formatter and notification refactor** (#516)
 
-### 修复（#patch）
-- 🐛 **大盘复盘策略框架与免责声明一致性修复**
-  - 统一 cn/us 模板复盘策略段落，全部复用 `self.strategy.to_markdown_block()`，避免美股维度与蓝图定义漂移
-  - 策略框架标题按区域输出中文/英文，避免英文报告出现“六、策略框架”
-  - 复盘 Prompt 的“策略计划”章节明确要求附加“建议仅供参考，不构成投资建议”
-  - 修正 `daily_analysis.yml` 定时注释与实际 cron（UTC 08:00）不一致问题
+### Fixed
+- 🐛 **STOCK_LIST not refreshed on scheduled runs** — `.env` or WebUI changes to `STOCK_LIST` now hot-reload before each scheduled analysis (#529)
+- 🐛 **WebUI fails to load with MIME type error** — SPA fallback route now resolves correct `Content-Type` for JS/CSS files (#520)
+- 🐛 **AstrBot sender docstring misplaced** — `import time` placed before docstring in `_send_astrbot`, causing it to become dead code
+- 🐛 **Telegram Markdown link escaping** — `_convert_to_telegram_markdown` escaped `[]()` characters, breaking all Markdown links in reports
+- 🐛 **Duplicate `discord_bot_status` field** in Config dataclass — second declaration silently shadowed the first
+- 🧹 **Unused imports** — removed `shutil`/`subprocess` from `main.py`
+- 🔧 **Config validation and Vision key check** (#525)
 
-### 测试（#patch）
-- ✅ **Agent 相关测试更新**
-  - 更新策略数量断言（`6 -> 11`），并同步 `test_agent_pipeline`、`test_agent_registry` 的断言逻辑
+### Docs
+- 📝 Clarified GitHub Actions non-trading-day manual run controls (`TRADING_DAY_CHECK_ENABLED` + `force_run`) for Issue #461 / PR #466
 
-### 文档（#skip）
-- 📝 **Agent 文档补充**
-  - 更新 `README.md`、`docs/README_EN.md`、`docs/README_CHT.md` 与 changelog，补充策略问股使用说明与测试说明
-- 📝 **LiteLLM Proxy 文档**
-  - 更新 `docs/full-guide.md`、`README.md`、`.env.example`，补充 LiteLLM Proxy 配置说明与冲突警告
+## [3.4.8] - 2026-03-02
+
+### Fixed
+- 🐛 **Desktop exe crashes on startup with `FileNotFoundError`** — PyInstaller build was missing litellm's JSON data files (e.g. `model_prices_and_context_window_backup.json`). Added `--collect-data litellm` to both Windows and macOS build scripts so the files are correctly bundled in the executable.
+
+### CI
+- 🔧 Cache Electron binaries on macOS CI runners to prevent intermittent EOF download failures when fetching `electron-vX.Y.Z-darwin-*.zip` from GitHub CDN
+- 🔧 Fix macOS DMG `hdiutil Resource busy` error during desktop packaging
+
+### Docs
+- 📝 Clarify non-trading-day manual run controls for GitHub Actions (`TRADING_DAY_CHECK_ENABLED` + `force_run`) (#474)
+
+## [3.4.7] - 2026-02-28
+
+### Added
+- 🧠 **CN/US Market Strategy Blueprint System** (#395) — market review prompt injects region-specific strategy blueprints with position sizing and risk trigger recommendations
+
+### Fixed
+- 🐛 **`TRADING_DAY_CHECK_ENABLED` env var and `--force-run` for GitHub Actions** (#466)
+- 🐛 **Agent pipeline preserved resolved stock names** (#464) — placeholder names no longer leak into reports
+- 🐛 **Code cleanup** (#462, Fixes #422)
+- 🐛 **WebUI auto-build on startup** (#460)
+- 🐛 **ARCH_ARGS unbound variable** (#458)
+- 🐛 **Time zone inconsistency & right panel flash** (#439)
+
+### Docs
+- 📝 Clarify potential ambiguities in code (#343)
+- 📝 ENABLE_EASTMONEY_PATCH guidance for Issue #453 (#456)
+
+## [3.4.0] - 2026-02-27
+
+### Added
+- 📡 **LiteLLM Direct Integration + Multi API Key Support** (#454, Fixes #421 #428)
+  - Removed native SDKs (google-generativeai, google-genai, anthropic); unified through `litellm>=1.80.10`
+  - New config: `LITELLM_MODEL`, `LITELLM_FALLBACK_MODELS`, `GEMINI_API_KEYS`, `ANTHROPIC_API_KEYS`, `OPENAI_API_KEYS`
+  - Multi-key auto-builds LiteLLM Router (simple-shuffle) with 429 cooldown
+  - **Breaking**: `.env` `GEMINI_MODEL` (no prefix) only for fallback; explicit config must include provider prefix
+
+### Changed
+- ♻️ **Notification Refactoring** (#435) — extracted 10 sender classes into `src/notification_sender/`
+
+### Fixed
+- 🐛 LLM NoneType crash, history API 422, sniper points extraction
+- 🐛 Auto-build frontend on WebUI startup — `WEBUI_AUTO_BUILD` env var (default `true`)
+- 🐛 Docker explicit project name (#448)
+- 🐛 Bocha search SSL retry (#445, #446) — transient errors retry up to 3 times
+- 🐛 Gemini google-genai SDK migration (Fixes #440, #444)
+- 🐛 Mobile home page scrolling (Fixes #419, #433)
+- 🐛 History list scroll reset (#431)
+- 🐛 Settings save button false positive (fixes #417, #430)
+
+## [3.3.22] - 2026-02-26
+
+### Added
+- 💬 **Chat History Persistence** (Fixes #400, #414) — `/chat` page survives refresh, sidebar session list
+- 🎨 Project VI Assets — logo icon set, PSD, vector, banner (#425)
+- 🚀 Desktop CI Auto-Release (#426) — Windows + macOS parallel builds
+
+### Fixed
+- 🐛 Agent Reasoning 400 & LiteLLM Proxy (fixes #409, #427)
+- 🐛 Discord chunked sending (#413) — `DISCORD_MAX_WORDS` config
+- 🐛 yfinance shared DataFrame (#412)
+- 🐛 sniper_points parsing (#408)
+- 🐛 Agent framework category missing (#406)
+- 🐛 Date inconsistency & query id (fixes #322, #363)
+
+## [3.3.12] - 2026-02-24
+
+### Added
+- 📈 **Intraday Realtime Technical Indicators** (Issue #234, #397) — MA calculated from realtime price, config: `ENABLE_REALTIME_TECHNICAL_INDICATORS`
+- 🤖 **Agent Strategy Chat** (#367) — full ReAct pipeline, 11 YAML strategies, SSE streaming, multi-turn chat
+- 📢 PushPlus Group Push — `PUSHPLUS_TOPIC` (#402)
+- 📅 Trading Day Check (Issue #373, #375) — `TRADING_DAY_CHECK_ENABLED`, `--force-run`
+
+### Fixed
+- 🐛 DeepSeek reasoning mode (Issue #379, #386)
+- 🐛 Agent news intel persistence (Fixes #396, #405)
+- 🐛 Bare except clauses replaced with `except Exception` (#398)
+- 🐛 UUID fallback for HTTP non-secure context (fixes #377, #381)
+- 🐛 Docker DNS resolution (Fixes #372, #374)
+- 🐛 Agent session/strategy bugs — multiple follow-up fixes for #367
+- 🐛 yfinance parallel download data filtering
+
+### Changed
+- Market review strategy consistency — unified cn/us template
+- Agent test assertions updated (`6 -> 11`)
+
 
 ## [3.2.11] - 2026-02-23
 
@@ -803,7 +772,12 @@
 
 ---
 
-[Unreleased]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.4.7...HEAD
+[3.4.7]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.4.0...v3.4.7
+[3.4.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.3.22...v3.4.0
+[3.3.22]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.3.12...v3.3.22
+[3.3.12]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.2.11...v3.3.12
+[3.2.11]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.2.10...v3.2.11
 [2.3.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v2.2.5...v2.3.0
 [2.2.5]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v2.2.4...v2.2.5
 [2.2.4]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v2.2.3...v2.2.4

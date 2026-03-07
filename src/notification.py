@@ -1320,31 +1320,6 @@ class NotificationService(
             ])
 
         lines.append("")
-    
-    def _truncate_to_bytes(self, text: str, max_bytes: int) -> str:
-        """
-        按字节数截断字符串，确保不会在多字节字符中间截断
-        
-        Args:
-            text: 要截断的字符串
-            max_bytes: 最大字节数
-            
-        Returns:
-            截断后的字符串
-        """
-        encoded = text.encode('utf-8')
-        if len(encoded) <= max_bytes:
-            return text
-        
-        # 从 max_bytes 位置往前找，确保不截断多字节字符
-        truncated = encoded[:max_bytes]
-        # 尝试解码，如果失败则继续往前
-        while truncated:
-            try:
-                return truncated.decode('utf-8')
-            except UnicodeDecodeError:
-                truncated = truncated[:-1]
-        return ""
 
     def _should_use_image_for_channel(
         self, channel: NotificationChannel, image_bytes: Optional[bytes]

@@ -240,10 +240,23 @@ class TelegramSender:
         # 转换 **bold** 为 *bold*
         result = re.sub(r'\*\*(.+?)\*\*', r'*\1*', result)
         
-        # 转义特殊字符（Telegram Markdown 需要）
-        # 注意：不转义已经用于格式的 * _ `
+        # Escape special characters for Telegram Markdown, but preserve link syntax [text](url)
+        # Step 1: temporarily protect markdown links
+        import uuid as _uuid
+        _link_placeholder = f"__LINK_{_uuid.uuid4().hex[:8]}__"
+        _links = []
+        def _save_link(m):
+            _links.append(m.group(0))
+            return f"{_link_placeholder}{len(_links) - 1}"
+        result = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _save_link, result)
+
+        # Step 2: escape remaining special chars
         for char in ['[', ']', '(', ')']:
             result = result.replace(char, f'\\{char}')
-        
+
+        # Step 3: restore links
+        for i, link in enumerate(_links):
+            result = result.replace(f"{_link_placeholder}{i}", link)
+
         return result
     

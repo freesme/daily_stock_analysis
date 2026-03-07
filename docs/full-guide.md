@@ -393,6 +393,29 @@ schedule:
 | 18:00 | `'0 10 * * 1-5'` |
 | 21:00 | `'0 13 * * 1-5'` |
 
+#### GitHub Actions 非交易日手动运行（Issue #461 / #466）
+
+`daily_analysis.yml` 支持两种控制方式：
+
+- `TRADING_DAY_CHECK_ENABLED`：仓库级配置（`Settings → Secrets and variables → Actions`），默认 `true`
+- `workflow_dispatch.force_run`：手动触发时的单次开关，默认 `false`
+
+推荐优先级理解：
+
+| 配置组合 | 非交易日行为 |
+|---------|-------------|
+| `TRADING_DAY_CHECK_ENABLED=true` + `force_run=false` | 跳过执行（默认行为） |
+| `TRADING_DAY_CHECK_ENABLED=true` + `force_run=true` | 本次强制执行 |
+| `TRADING_DAY_CHECK_ENABLED=false` + `force_run=false` | 始终执行（定时和手动都不检查交易日） |
+| `TRADING_DAY_CHECK_ENABLED=false` + `force_run=true` | 始终执行 |
+
+手动触发步骤：
+
+1. 打开 `Actions → 每日股票分析 → Run workflow`
+2. 选择 `mode`（`full` / `market-only` / `stocks-only`）
+3. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
+4. 点击 `Run workflow`
+
 ### 本地定时任务
 
 内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析。
@@ -649,11 +672,12 @@ LITELLM_FALLBACK_MODELS=anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o-mini
 
 **视觉模型（图片提取股票代码）**：
 
-从图片提取股票代码（如 `/api/v1/stocks/extract-from-image`）使用 LiteLLM Vision，采用 OpenAI `image_url` 格式，支持 Gemini、Claude、OpenAI 等所有 Vision-capable 模型。
+从图片提取股票代码（如 `/api/v1/stocks/extract-from-image`）使用 LiteLLM Vision，采用 OpenAI `image_url` 格式，支持 Gemini、Claude、OpenAI、DeepSeek 等 Vision-capable 模型。
 
-- **模型优先级**：`OPENAI_VISION_MODEL` > `LITELLM_MODEL` > 根据已有 API Key 推断
-- **Gemini 3 限制**：Gemini 3 不支持 Vision，系统自动降级为 `gemini/gemini-2.0-flash`
-- **主模型不支持 Vision 时**：若主模型为 DeepSeek 等非 Vision 模型，可显式配置 `OPENAI_VISION_MODEL=openai/gpt-4o` 或 `gemini/gemini-2.0-flash` 供图片提取使用
+- **模型优先级**：`VISION_MODEL` > `LITELLM_MODEL` > 根据已有 API Key 推断（`OPENAI_VISION_MODEL` 已废弃，请改用 `VISION_MODEL`）
+- **Provider 回退**：主模型失败时，按 `VISION_PROVIDER_PRIORITY`（默认 `gemini,anthropic,openai`）自动切换到下一个可用 provider
+- **主模型不支持 Vision 时**：若主模型为 DeepSeek 等非 Vision 模型，可显式配置 `VISION_MODEL=openai/gpt-4o` 或 `gemini/gemini-2.0-flash` 供图片提取使用
+- **配置校验**：若配置了 `VISION_MODEL` 但未配置对应 provider 的 API Key，启动时会输出 warning，图片提取功能将不可用
 
 ### 调试模式
 

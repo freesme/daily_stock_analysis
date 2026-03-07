@@ -46,6 +46,8 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
     测试设计：
 
     测试按照渠道的字母顺序排列，在合适位置添加新的测试方法。
+    如果采用长消息分批发送，必须单独测试分批发送的逻辑，
+        e.g. test_send_to_discord_via_notification_service_with_bot_requires_chunking
 
     1. 添加模拟配置：
     使用 mock.patch 装饰器来模拟 get_config 函数，
@@ -63,6 +65,8 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
     4. 使用 assertTrue 检查 send 的返回值。
 
     5. 使用 assert_called_once 检查请求函数是否被调用一次。
+    测试分批发送时，使用 assertAlmostEqual(mock_post.call_count, ...) 检查请求函数被调用次数
+
     """
 
     @mock.patch("src.notification.get_config")
@@ -140,6 +144,25 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+        
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_discord_via_notification_service_with_bot_requires_chunking(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(
+            discord_bot_token="TOKEN",
+            discord_main_channel_id="123",
+            discord_max_words=2000,
+        )
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200)
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.DISCORD, service.get_available_channels())
+
+        ok = service.send("A" * 6000)
+
+        self.assertTrue(ok)
+        self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
 
     @mock.patch("src.notification.get_config")
     @mock.patch("smtplib.SMTP_SSL")
@@ -202,6 +225,21 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+        
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_feishu_via_notification_service_requires_chunking(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(feishu_webhook_url="https://feishu.example", feishu_max_bytes=2000)
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200, {"code": 0})
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.FEISHU, service.get_available_channels())
+
+        ok = service.send("A" * 6000)
+
+        self.assertTrue(ok)
+        self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
 
     @mock.patch("src.notification.get_config")
     @mock.patch("requests.post")
@@ -288,6 +326,21 @@ class TestNotificationServiceSendToMethods(unittest.TestCase):
 
         self.assertTrue(ok)
         mock_post.assert_called_once()
+
+    @mock.patch("src.notification.get_config")
+    @mock.patch("requests.post")
+    def test_send_to_wechat_via_notification_service_requires_chunking(self, mock_post: mock.MagicMock, mock_get_config: mock.MagicMock):
+        cfg = _make_config(wechat_webhook_url="https://wechat.example", wechat_max_bytes=2000)
+        mock_get_config.return_value = cfg
+        mock_post.return_value = _make_response(200, {"errcode": 0})
+
+        service = NotificationService()
+        self.assertIn(NotificationChannel.WECHAT, service.get_available_channels())
+
+        ok = service.send("A" * 6000)
+
+        self.assertTrue(ok)
+        self.assertAlmostEqual(mock_post.call_count, 4, delta=1)
 
 
 if __name__ == "__main__":

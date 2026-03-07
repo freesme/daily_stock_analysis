@@ -1,3 +1,4 @@
+export * from './LLMChannelEditor';
 export * from './SettingsAlert';
 export * from './ChangePasswordCard';
 export * from './ImageStockExtractor';

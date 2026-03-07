@@ -4,6 +4,7 @@ import { useAuth, useSystemConfig } from '../hooks';
 import {
   ChangePasswordCard,
   ImageStockExtractor,
+  LLMChannelEditor,
   SettingsAlert,
   SettingsField,
   SettingsLoading,
@@ -53,7 +54,15 @@ const SettingsPage: React.FC = () => {
     };
   }, [clearToast, toast]);
 
-  const activeItems = itemsByCategory[activeCategory] || [];
+  const rawActiveItems = itemsByCategory[activeCategory] || [];
+
+  // Hide per-channel LLM_*_ env vars from the normal field list;
+  // they are managed by the LLMChannelEditor component instead.
+  const LLM_CHANNEL_KEY_RE = /^LLM_[A-Z0-9]+_(BASE_URL|API_KEY|API_KEYS|MODELS|EXTRA_HEADERS)$/;
+  const activeItems =
+    activeCategory === 'ai_model'
+      ? rawActiveItems.filter((item) => !LLM_CHANNEL_KEY_RE.test(item.key))
+      : rawActiveItems;
 
   return (
     <div className="min-h-screen px-4 pb-6 pt-4 md:px-6">
@@ -150,6 +159,15 @@ const SettingsPage: React.FC = () => {
                   disabled={isSaving || isLoading}
                 />
               </div>
+            ) : null}
+            {activeCategory === 'ai_model' ? (
+              <LLMChannelEditor
+                items={rawActiveItems}
+                configVersion={configVersion}
+                maskToken={maskToken}
+                onSaved={() => void load()}
+                disabled={isSaving || isLoading}
+              />
             ) : null}
             {activeCategory === 'system' && passwordChangeable ? (
               <div className="space-y-3">

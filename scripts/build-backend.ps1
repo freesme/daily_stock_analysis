@@ -99,7 +99,8 @@ $pyInstallerArgs = @(
   '--onedir',
   '--noconfirm',
   '--noconsole',
-  '--add-data', 'static;static'
+  '--add-data', 'static;static',
+  '--collect-data', 'litellm'
 )
 $pyInstallerArgs += $hiddenImportArgs
 $pyInstallerArgs += 'main.py'

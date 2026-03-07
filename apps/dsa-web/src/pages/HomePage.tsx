@@ -173,22 +173,21 @@ const HomePage: React.FC = () => {
   }, [fetchHistory, isLoadingMore, hasMore]);
 
   // 初始加载 - 自动选择第一条（仅挂载时执行一次）
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchHistory(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Background polling: re-fetch history every 30s for CLI-initiated analyses
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const interval = setInterval(() => {
       fetchHistory(false, true, true);
     }, 30_000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Refresh when tab regains visibility (e.g. user ran main.py in another terminal)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -197,6 +196,7 @@ const HomePage: React.FC = () => {
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 点击历史项加载报告
