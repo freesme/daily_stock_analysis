@@ -49,7 +49,7 @@
 |------|------|
 | AI 模型 | Gemini（免費）、OpenAI 兼容、DeepSeek、通義千問、Claude、Ollama |
 | 行情數據 | AkShare、Tushare、Pytdx、Baostock、YFinance |
-| 新聞搜索 | Tavily、SerpAPI、Bocha、Brave |
+| 新聞搜索 | Tavily、SerpAPI、Bocha、Brave、MiniMax |
 
 ### 內建交易紀律
 
@@ -119,6 +119,7 @@
 |------------|------|:----:|
 | `STOCK_LIST` | 自選股代碼，如 `600519,hk00700,AAPL,TSLA` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新聞搜索） | 推薦 |
+| `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/) Coding Plan Web Search（結構化搜索結果） | 可選 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索優化，支持AI摘要，多個key用逗號分隔） | 可選 |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API（隱私優先，美股優化，多個key用逗號分隔） | 可選 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) 備用搜索 | 可選 |
@@ -307,6 +308,7 @@ daily_stock_analysis/
 
 ## 聯繫與合作
 - GitHub Issues：[提交 Issue](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
+- 合作郵箱：zhuls345@gmail.com
 
 ## Star History
 **如果覺得有用，請給個 ⭐ Star 支持一下！**
@@ -324,4 +326,3 @@ daily_stock_analysis/
 本項目僅供學習和研究使用，不構成任何投資建議。股市有風險，投資需謹慎。作者不對使用本項目產生的任何損失負責。
 
 ---
-

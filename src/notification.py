@@ -16,12 +16,14 @@ A股自选股智能分析系统 - 通知层
 """
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from enum import Enum
 
 from src.config import get_config
 from src.analyzer import AnalysisResult
+from src.enums import ReportType
 from bot.models import BotMessage
+from src.utils.data_processing import normalize_model_used
 from src.notification_sender import (
     AstrbotSender,
     CustomWebhookSender,
@@ -130,6 +132,7 @@ class NotificationService(
 
         # 仅分析结果摘要（Issue #262）：true 时只推送汇总，不含个股详情
         self._report_summary_only = getattr(config, 'report_summary_only', False)
+        self._history_compare_cache: Dict[Tuple[int, Tuple[Tuple[str, str], ...]], Dict[str, List[Dict[str, Any]]]] = {}
 
         # 初始化各渠道
         AstrbotSender.__init__(self, config)
@@ -142,18 +145,79 @@ class NotificationService(
         Serverchan3Sender.__init__(self, config)
         TelegramSender.__init__(self, config)
         WechatSender.__init__(self, config)
-        
+
         # 检测所有已配置的渠道
         self._available_channels = self._detect_all_channels()
         if self._has_context_channel():
             self._context_channels.append("钉钉会话")
-        
+
         if not self._available_channels and not self._context_channels:
             logger.warning("未配置有效的通知渠道，将不发送推送通知")
         else:
             channel_names = [ChannelDetector.get_channel_name(ch) for ch in self._available_channels]
             channel_names.extend(self._context_channels)
             logger.info(f"已配置 {len(channel_names)} 个通知渠道：{', '.join(channel_names)}")
+
+    def _normalize_report_type(self, report_type: Any) -> ReportType:
+        """Normalize string/enum input into ReportType."""
+        if isinstance(report_type, ReportType):
+            return report_type
+        return ReportType.from_str(report_type)
+
+    def _get_history_compare_context(self, results: List[AnalysisResult]) -> Dict[str, Any]:
+        """Fetch and cache history comparison data for markdown rendering."""
+        config = get_config()
+        history_compare_n = getattr(config, 'report_history_compare_n', 0)
+        if history_compare_n <= 0 or not results:
+            return {"history_by_code": {}}
+
+        cache_key = (
+            history_compare_n,
+            tuple(sorted((r.code, getattr(r, 'query_id', '') or '') for r in results)),
+        )
+        if cache_key in self._history_compare_cache:
+            return {"history_by_code": self._history_compare_cache[cache_key]}
+
+        try:
+            from src.services.history_comparison_service import get_signal_changes_batch
+
+            exclude_ids = {
+                r.code: r.query_id
+                for r in results
+                if getattr(r, 'query_id', None)
+            }
+            codes = list(dict.fromkeys(r.code for r in results))
+            history_by_code = get_signal_changes_batch(
+                codes,
+                limit=history_compare_n,
+                exclude_query_ids=exclude_ids,
+            )
+        except Exception as e:
+            logger.debug("History comparison skipped: %s", e)
+            history_by_code = {}
+
+        self._history_compare_cache[cache_key] = history_by_code
+        return {"history_by_code": history_by_code}
+
+    def generate_aggregate_report(
+        self,
+        results: List[AnalysisResult],
+        report_type: Any,
+        report_date: Optional[str] = None,
+    ) -> str:
+        """Generate the aggregate report content used by merge/save/push paths."""
+        normalized_type = self._normalize_report_type(report_type)
+        if normalized_type == ReportType.BRIEF:
+            return self.generate_brief_report(results, report_date=report_date)
+        return self.generate_dashboard_report(results, report_date=report_date)
+
+    def _collect_models_used(self, results: List[AnalysisResult]) -> List[str]:
+        models: List[str] = []
+        for result in results:
+            model = normalize_model_used(getattr(result, "model_used", None))
+            if model:
+                models.append(model)
+        return list(dict.fromkeys(models))
     
     def _detect_all_channels(self) -> List[NotificationChannel]:
         """
@@ -706,6 +770,19 @@ class NotificationService(
         Returns:
             Markdown 格式的决策仪表盘日报
         """
+        config = get_config()
+        if getattr(config, 'report_renderer_enabled', False) and results:
+            from src.services.report_renderer import render
+            out = render(
+                platform='markdown',
+                results=results,
+                report_date=report_date,
+                summary_only=self._report_summary_only,
+                extra_context=self._get_history_compare_context(results),
+            )
+            if out:
+                return out
+
         if report_date is None:
             report_date = datetime.now().strftime('%Y-%m-%d')
 
@@ -969,6 +1046,18 @@ class NotificationService(
         Returns:
             精简版决策仪表盘
         """
+        config = get_config()
+        if getattr(config, 'report_renderer_enabled', False) and results:
+            from src.services.report_renderer import render
+            out = render(
+                platform='wechat',
+                results=results,
+                report_date=datetime.now().strftime('%Y-%m-%d'),
+                summary_only=self._report_summary_only,
+            )
+            if out:
+                return out
+
         report_date = datetime.now().strftime('%Y-%m-%d')
         
         # 按评分排序
@@ -1095,7 +1184,10 @@ class NotificationService(
         
         # 底部
         lines.append(f"*生成时间: {datetime.now().strftime('%H:%M')}*")
-        
+        models = self._collect_models_used(results)
+        if models:
+            lines.append(f"*分析模型: {', '.join(models)}*")
+
         content = "\n".join(lines)
         
         return content
@@ -1153,17 +1245,72 @@ class NotificationService(
             
             lines.append("")
         
-        # 底部
+        # 底部（模型行在 --- 之前，Issue #528）
+        models = self._collect_models_used(results)
+        if models:
+            lines.append(f"*分析模型: {', '.join(models)}*")
         lines.extend([
             "---",
             "*AI生成，仅供参考，不构成投资建议*",
             f"*详细报告见 reports/report_{report_date.replace('-', '')}.md*"
         ])
-        
+
         content = "\n".join(lines)
-        
+
         return content
-    
+
+    def generate_brief_report(
+        self,
+        results: List[AnalysisResult],
+        report_date: Optional[str] = None,
+    ) -> str:
+        """
+        Generate brief report (3-5 sentences per stock) for mobile/push.
+
+        Args:
+            results: Analysis results list (use [result] for single stock).
+            report_date: Report date (default: today).
+
+        Returns:
+            Brief markdown content.
+        """
+        if report_date is None:
+            report_date = datetime.now().strftime('%Y-%m-%d')
+        config = get_config()
+        if getattr(config, 'report_renderer_enabled', False) and results:
+            from src.services.report_renderer import render
+            out = render(
+                platform='brief',
+                results=results,
+                report_date=report_date,
+                summary_only=False,
+            )
+            if out:
+                return out
+        # Fallback: brief summary from dashboard report
+        if not results:
+            return f"# {report_date} 决策简报\n\n无分析结果"
+        sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
+        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
+        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+        lines = [
+            f"# {report_date} 决策简报",
+            "",
+            f"> {len(results)}只 | 🟢{buy_count} 🟡{hold_count} 🔴{sell_count}",
+            "",
+        ]
+        for r in sorted_results:
+            _, emoji, _ = self._get_signal_level(r)
+            name = r.name if r.name and not r.name.startswith('股票') else f'股票{r.code}'
+            dash = r.dashboard or {}
+            core = dash.get('core_conclusion', {}) or {}
+            one = (core.get('one_sentence') or r.analysis_summary or '')[:60]
+            lines.append(f"**{self._escape_md(name)}({r.code})** {emoji} {r.operation_advice} | 评分{r.sentiment_score} | {one}")
+        lines.append("")
+        lines.append(f"*{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
+        return "\n".join(lines)
+
     def generate_single_stock_report(self, result: AnalysisResult) -> str:
         """
         生成单只股票的分析报告（用于单股推送模式 #55）
@@ -1272,11 +1419,12 @@ class NotificationService(
                 "",
             ])
         
-        lines.extend([
-            "---",
-            "*AI生成，仅供参考，不构成投资建议*",
-        ])
-        
+        lines.append("---")
+        model_used = normalize_model_used(getattr(result, "model_used", None))
+        if model_used:
+            lines.append(f"*分析模型: {model_used}*")
+        lines.append("*AI生成，仅供参考，不构成投资建议*")
+
         return "\n".join(lines)
 
     # Display name mapping for realtime data sources
@@ -1391,7 +1539,19 @@ class NotificationService(
                 logger.info("Markdown 已转换为图片，将向 %s 发送图片",
                             [ch.value for ch in channels_needing_image])
             elif channels_needing_image:
-                logger.warning("Markdown 转图片失败，将回退为文本发送")
+                try:
+                    from src.config import get_config
+                    engine = getattr(get_config(), "md2img_engine", "wkhtmltoimage")
+                except Exception:
+                    engine = "wkhtmltoimage"
+                hint = (
+                    "npm i -g markdown-to-file" if engine == "markdown-to-file"
+                    else "wkhtmltopdf (apt install wkhtmltopdf / brew install wkhtmltopdf)"
+                )
+                logger.warning(
+                    "Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
+                    hint,
+                )
 
         channel_names = self.get_channel_names()
         logger.info(f"正在向 {len(self._available_channels)} 个渠道发送通知：{channel_names}")

@@ -29,6 +29,7 @@ from api.v1.schemas.history import (
 from api.v1.schemas.common import ErrorResponse
 from src.storage import DatabaseManager
 from src.services.history_service import HistoryService
+from src.utils.data_processing import normalize_model_used
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,8 @@ def get_history_detail(
             report_type=result.get("report_type"),
             created_at=result.get("created_at"),
             current_price=current_price,
-            change_pct=change_pct
+            change_pct=change_pct,
+            model_used=normalize_model_used(result.get("model_used"))
         )
         
         summary = ReportSummary(

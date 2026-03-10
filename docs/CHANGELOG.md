@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- 📊 **LLM cost tracking** — all LLM calls (analysis, agent, market review) are recorded in the `llm_usage` table; new `GET /api/v1/usage/summary?period=today|month|all` endpoint returns aggregated token usage broken down by call type and model
+### Fixed
+- 🐛 **历史报告狙击点位显示原始文本** (#452) — 历史详情页现优先展示 `raw_result.dashboard.battle_plan.sniper_points` 中的原始字符串，避免 `analysis_history` 数值列把区间、说明文字或复杂点位压缩成单个数字；保留原有数值列作为回退
+
+### Changed
+- 🔎 **Fetcher failure observability** — historical data logs now record fetcher start/success/failure with elapsed time, explicit failover transitions, and clearer final outcomes; Efinance/Eastmoney failures now include upstream endpoint and normalized categories such as `remote_disconnect` and `timeout`; Akshare 新浪/腾讯实时行情日志 now also include upstream endpoint and classified failures for HTTP status, disconnects, and malformed payloads
+
+### Added
+- **Agent 问股导出与发送** (#495) — 问股页面新增「导出会话」按钮，将会话保存为本地 .md 文件；新增「发送」按钮，将会话发送到已配置的通知渠道（企业微信/飞书/邮件等）；新增 `POST /api/v1/agent/chat/send` 接口
+- **Agent 问股后台执行** (#495) — 问股分析在切换页面后继续执行，不中断；完成时在 Dock 问股图标显示角标提示；切换会话或新建会话时自动取消进行中的流式请求
+- **Report Engine P0** — Pydantic schema validation for LLM JSON output; Jinja2 templates (`report_markdown.j2`, `report_wechat.j2`, `report_brief.j2`) with fallback to legacy string concatenation; content integrity checks with conditional retry and placeholder fill; brief mode (`REPORT_TYPE=brief`) for 3-5 sentence summaries; history comparison service for signal changes across recent analyses
+- **Report config** — `REPORT_TEMPLATES_DIR`, `REPORT_RENDERER_ENABLED`, `REPORT_INTEGRITY_ENABLED`, `REPORT_INTEGRITY_RETRY`, `REPORT_HISTORY_COMPARE_N`; `REPORT_TYPE` now supports `brief`
+- **智能导入 (P1)** — 支持图片、CSV/Excel、剪贴板多源导入；Vision LLM 同时提取代码+名称+置信度；名称→代码解析引擎（本地映射+拼音+AkShare fallback）；置信度分层确认（高自动勾选、中/低需人工确认）；统一预览与合并流程
+- **EXTRACT_PROMPT 文档** — `docs/image-extract-prompt.md` 记录完整 prompt 便于 PR 审查；PR 模板新增 EXTRACT_PROMPT 变更展示区块
+- 📖 **LLM 配置指南** — 新增 [docs/LLM_CONFIG_GUIDE.md](LLM_CONFIG_GUIDE.md)，系统讲解三层配置、快速上手、Vision/Agent/Web UI/校验排错；同步更新 README、full-guide、.env.example、FAQ、英文版指南
+- 🔍 **MiniMax Coding Plan web search provider** — new `MiniMaxSearchProvider` with circuit breaker (3 failures → 300s cooldown), dual time-filtering (query augmentation + client-side date filtering), priority: Bocha > Tavily > Brave > SerpAPI > **MiniMax**; configured via `MINIMAX_API_KEYS` env var
+
+### Changed
+- **API 响应扩展（兼容提醒）** — `POST /api/v1/stocks/extract-from-image` 响应新增 `items` 字段（`code/name/confidence` 明细）；保留 `codes` 以兼容旧客户端。对严格 JSON Schema 且不接受未知字段的客户端，需评估并适配该字段变更。
+- **parse-import 错误信息细化** — Excel 解析失败时增加可操作提示（格式、工作表、损坏）；CSV 解析失败（如引号未闭合、列数不一致）时返回具体原因；`docs/full-guide.md` 补充列名说明与常见解析失败场景。
+- **parse_import 日志优化** — 文件读取失败、JSON 解析失败、parse 失败时记录文件类型、大小、错误摘要，便于排查。
+- **AkShare 缓存说明** — `docs/full-guide.md` 补充名称解析 AkShare fallback 的 1h TTL 缓存说明。
+- **Fetcher failure observability** — historical data logs now record fetcher start/success/failure with elapsed time, explicit failover transitions, and clearer final outcomes; Efinance/Eastmoney failures now include upstream endpoint and normalized categories such as `remote_disconnect` and `timeout`; Akshare 新浪/腾讯实时行情日志 now also include upstream endpoint and classified failures for HTTP status, disconnects, and malformed payloads
+
+### Fixed
+- **问股取消与切换** (#495) — 用户取消流式请求时不再误报为失败；快速切换会话时不再覆盖新 stream 状态
+
+## [3.4.10] - 2026-03-07
+
+### Fixed
+- 🐛 **EfinanceFetcher ETF OHLCV data** (#541, #527) — switch `_fetch_etf_data` from `ef.fund.get_quote_history` (NAV-only, no OHLCV, no `beg`/`end` params) to `ef.stock.get_quote_history`; ETFs now return proper open/high/low/close/volume/amount instead of zeros; remove obsolete NAV column mappings from `_normalize_data`
+- 🐛 **tiktoken 0.12.0 `Unknown encoding cl100k_base`** (#537) — pin `tiktoken>=0.8.0,<0.12.0` in requirements.txt to avoid plugin-registration regression introduced in 0.12.0
+- 🐛 **Web UI API error classification** (#540) — frontend no longer treats every HTTP 400 as the same "server/network" failure; now distinguishes Agent disabled / missing params / model-tool incompatibility / upstream LLM errors / local connection failures
+- 🐛 **北交所代码识别失败** (#491, #533) — 8/4/92 开头的 6 位代码现正确识别为北交所；Tushare/Akshare/Yfinance 等数据源支持 .BJ 或 bj 前缀；Baostock/Pytdx 对北交所代码显式切换数据源；避免误判上海 B 股 900xxx
+- 🐛 **狙击点位解析错误** (#488, #532) — 理想买入/二次买入等字段在无「元」字时误提取括号内技术指标数字；现先截去第一个括号后内容再提取
+
+### Added
+- **Markdown-to-image for dashboard report** (#455, #535) — 个股日报汇总支持 markdown 转图片推送（Telegram、WeChat、Custom、Email），与大盘复盘行为一致
+- **markdown-to-file engine** (#455) — `MD2IMG_ENGINE=markdown-to-file` 可选，对 emoji 支持更好，需 `npm i -g markdown-to-file`
+- **PREFETCH_REALTIME_QUOTES** (#455) — 设为 `false` 可禁用实时行情预取，避免 efinance/akshare_em 全市场拉取
+- **Stock name prefetch** (#455) — 分析前预取股票名称，减少报告中「股票xxxxx」占位符
+- 📊 **分析报告模型标记** (#528, #534) — 在分析报告 meta、报告末尾、推送内容中展示 `model_used`（完整 LLM 模型名）；Agent 多轮调用时记录并展示每轮实际使用的模型（支持 fallback 切换）
+
+### Changed
+- **Enhanced markdown-to-image failure warning** (#455) — 转图失败时提示具体依赖（wkhtmltopdf 或 m2f）
+- **WeChat-only image routing optimization** (#455) — 仅配置企业微信图片时，不再对完整报告做冗余转图，避免误导性失败日志
+- **Stock name prefetch lightweight mode** (#455) — 名称预取阶段跳过 realtime quote 查询，减少额外网络开销
+
 ## [3.4.9] - 2026-03-06
 
 ### Added
@@ -772,7 +821,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.4.7...HEAD
+[Unreleased]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.4.10...HEAD
+[3.4.10]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.4.9...v3.4.10
+[3.4.9]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.4.8...v3.4.9
+[3.4.8]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.4.7...v3.4.8
 [3.4.7]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.4.0...v3.4.7
 [3.4.0]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.3.22...v3.4.0
 [3.3.22]: https://github.com/ZhuLinsen/daily_stock_analysis/compare/v3.3.12...v3.3.22

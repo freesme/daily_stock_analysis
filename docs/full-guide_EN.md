@@ -92,7 +92,12 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | Secret Name | Description | Required |
 |------------|------|:----:|
 | `SINGLE_STOCK_NOTIFY` | Single stock push mode: set to `true` to push immediately after each stock analysis | Optional |
-| `REPORT_TYPE` | Report type: `simple` (brief) or `full` (complete), Docker environment recommended: `full` | Optional |
+| `REPORT_TYPE` | Report type: `simple` (concise), `full` (complete), `brief` (3-5 sentences), Docker recommended: `full` | Optional |
+| `REPORT_TEMPLATES_DIR` | Jinja2 template directory (relative to project root, default `templates`) | Optional |
+| `REPORT_RENDERER_ENABLED` | Enable Jinja2 template rendering (default `false`, zero regression) | Optional |
+| `REPORT_INTEGRITY_ENABLED` | Enable report integrity checks, retry or placeholder on missing fields (default `true`) | Optional |
+| `REPORT_INTEGRITY_RETRY` | Integrity retry count (default `1`, `0` = placeholder only) | Optional |
+| `REPORT_HISTORY_COMPARE_N` | History signal comparison count, `0` off (default), `>0` enable | Optional |
 | `ANALYSIS_DELAY` | Delay between stock analysis and market review (seconds) to avoid API rate limits, e.g., `10` | Optional |
 
 #### Other Configuration
@@ -101,6 +106,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `STOCK_LIST` | Watchlist codes, e.g., `600519,300750,002594` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news search) | Recommended |
+| `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/) Coding Plan Web Search (structured search results) | Optional |
 | `BOCHA_API_KEYS` | [Bocha Search](https://open.bocha.cn/) Web Search API (Chinese search optimized, supports AI summaries, multiple keys comma-separated) | Optional |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) Backup search | Optional |
 | `TUSHARE_TOKEN` | [Tushare Pro](https://tushare.pro/weborder/#/login?reg=834638) Token | Optional |
@@ -140,16 +146,22 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 
 ### AI Model Configuration
 
+> Full details: [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) (three-tier config, channels, Vision, Agent, troubleshooting).
+
 | Variable | Description | Default | Required |
 |--------|------|--------|:----:|
-| `GEMINI_API_KEY` | Google Gemini API Key | - | ✅* |
-| `GEMINI_MODEL` | Primary model name | `gemini-3-flash-preview` | No |
-| `GEMINI_MODEL_FALLBACK` | Fallback model | `gemini-2.5-flash` | No |
+| `LITELLM_MODEL` | Primary model, format `provider/model` (e.g. `gemini/gemini-2.5-flash`), recommended | - | No |
+| `LITELLM_FALLBACK_MODELS` | Fallback models, comma-separated | - | No |
+| `LLM_CHANNELS` | Channel names (comma-separated), use with `LLM_{NAME}_*`, see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) | - | No |
+| `LITELLM_CONFIG` | LiteLLM YAML config path (advanced) | - | No |
+| `GEMINI_API_KEY` | Google Gemini API Key | - | Optional |
+| `GEMINI_MODEL` | Primary model name (legacy, `LITELLM_MODEL` preferred) | `gemini-3-flash-preview` | No |
+| `GEMINI_MODEL_FALLBACK` | Fallback model (legacy) | `gemini-2.5-flash` | No |
 | `OPENAI_API_KEY` | OpenAI-compatible API Key | - | Optional |
 | `OPENAI_BASE_URL` | OpenAI-compatible API endpoint | - | Optional |
-| `OPENAI_MODEL` | OpenAI model name | `gpt-4o` | Optional |
+| `OPENAI_MODEL` | OpenAI model name (legacy) | `gpt-4o` | Optional |
 
-> *Note: Configure at least one of `GEMINI_API_KEY` or `OPENAI_API_KEY`
+> *Note: Configure at least one of `GEMINI_API_KEY`, `OPENAI_API_KEY`, or `LLM_CHANNELS` / `LITELLM_CONFIG`
 
 ### Notification Channel Configuration
 
@@ -194,7 +206,9 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | Variable | Description | Required |
 |--------|------|:----:|
 | `TAVILY_API_KEYS` | Tavily Search API Key (recommended) | Recommended |
+| `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search (structured results) | Optional |
 | `BOCHA_API_KEYS` | Bocha Search API Key (Chinese optimized) | Optional |
+| `BRAVE_API_KEYS` | Brave Search API Key (US stocks optimized) | Optional |
 | `SERPAPI_API_KEYS` | SerpAPI Backup search | Optional |
 
 ### Data Source Configuration
@@ -519,6 +533,28 @@ OPENAI_MODEL=deepseek-chat
 # Thinking mode: deepseek-reasoner, deepseek-r1, qwq auto-detected; deepseek-chat enabled by model name
 ```
 
+### LiteLLM Direct Integration (Multi-Model + Multi-Key Load Balancing)
+
+See [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md). This project uses [LiteLLM](https://github.com/BerriAI/litellm) to unify all LLM calls; no separate Proxy service required.
+
+**Two-layer mechanism**: Same-model multi-key rotation (Router) and cross-model fallback are independent.
+
+**Multi-key + cross-model fallback example**:
+
+```env
+# Primary: 3 Gemini keys rotate; Router switches on 429
+GEMINI_API_KEYS=key1,key2,key3
+LITELLM_MODEL=gemini/gemini-3-flash-preview
+
+# Cross-model fallback: when all primary keys fail, try Claude → GPT
+# Requires ANTHROPIC_API_KEY, OPENAI_API_KEY
+LITELLM_FALLBACK_MODELS=anthropic/claude-3-5-sonnet-20241022,openai/gpt-4o-mini
+```
+
+> ⚠️ `LITELLM_MODEL` must include provider prefix (e.g. `gemini/`, `anthropic/`, `openai/`). Legacy `GEMINI_MODEL` (no prefix) is only used when `LITELLM_MODEL` is not set.
+
+**Vision model (image stock code extraction)**: See [LLM Config Guide - Vision](LLM_CONFIG_GUIDE_EN.md#41-vision-model-image-stock-code-extraction).
+
 ### Debug Mode
 
 ```bash
@@ -661,6 +697,7 @@ python main.py --serve-only --host 0.0.0.0 --port 8888
 | Type | Format | Examples |
 |------|------|------|
 | A-shares | 6-digit number | `600519`, `000001`, `300750` |
+| BSE (Beijing) | 8/4/92 prefix, 6-digit | `920748`, `838163`, `430047` |
 | HK stocks | hk + 5-digit number | `hk00700`, `hk09988` |
 
 ### Notes

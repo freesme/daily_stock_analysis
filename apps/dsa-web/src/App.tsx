@@ -1,4 +1,5 @@
 import type React from 'react';
+import { useEffect } from 'react';
 import {BrowserRouter as Router, Routes, Route, NavLink, useLocation, Navigate} from 'react-router-dom';
 import HomePage from './pages/HomePage';
 import BacktestPage from './pages/BacktestPage';
@@ -6,7 +7,9 @@ import SettingsPage from './pages/SettingsPage';
 import LoginPage from './pages/LoginPage';
 import NotFoundPage from './pages/NotFoundPage';
 import ChatPage from './pages/ChatPage';
+import { ApiErrorAlert } from './components/common';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { useAgentChatStore } from './stores/agentChatStore';
 import './App.css';
 
 // 侧边导航图标
@@ -83,6 +86,7 @@ const NAV_ITEMS: DockItem[] = [
 // Dock 导航栏
 const DockNav: React.FC = () => {
     const {authEnabled, logout} = useAuth();
+    const completionBadge = useAgentChatStore((s) => s.completionBadge);
     return (
         <aside className="dock-nav" aria-label="主导航">
             <div className="dock-surface">
@@ -96,6 +100,27 @@ const DockNav: React.FC = () => {
                 <nav className="dock-items" aria-label="页面">
                     {NAV_ITEMS.map((item) => {
                         const Icon = item.icon;
+                        if (item.key === 'chat') {
+                            return (
+                                <div key="chat" className="relative inline-flex">
+                                    <NavLink
+                                        to="/chat"
+                                        end={false}
+                                        title="问股"
+                                        aria-label="问股"
+                                        className={({isActive}) => `dock-item${isActive ? ' is-active' : ''}`}
+                                    >
+                                        {({isActive}) => <Icon active={isActive}/>}
+                                    </NavLink>
+                                    {completionBadge && (
+                                        <span
+                                            className="absolute top-0.5 right-0.5 w-2.5 h-2.5 rounded-full bg-cyan border-2 border-base z-10 pointer-events-none"
+                                            aria-label="问股有新消息"
+                                        />
+                                    )}
+                                </div>
+                            );
+                        }
                         return (
                             <NavLink
                                 key={item.key}
@@ -133,6 +158,10 @@ const AppContent: React.FC = () => {
     const location = useLocation();
     const { authEnabled, loggedIn, isLoading, loadError, refreshStatus } = useAuth();
 
+    useEffect(() => {
+        useAgentChatStore.getState().setCurrentRoute(location.pathname);
+    }, [location.pathname]);
+
     if (isLoading) {
         return (
             <div className="flex min-h-screen items-center justify-center bg-base">
@@ -144,7 +173,9 @@ const AppContent: React.FC = () => {
     if (loadError) {
         return (
             <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-base px-4">
-                <p className="text-sm text-red-400">无法连接到服务器，请检查后端是否正常运行。</p>
+                <div className="w-full max-w-lg">
+                    <ApiErrorAlert error={loadError}/>
+                </div>
                 <button
                     type="button"
                     className="btn-primary"

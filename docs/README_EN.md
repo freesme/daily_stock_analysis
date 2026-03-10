@@ -49,7 +49,7 @@ English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 |------|----------|
 | LLMs | Gemini (free), OpenAI-compatible, DeepSeek, Qwen, Claude, Ollama |
 | Market Data | AkShare, Tushare, Pytdx, Baostock, YFinance |
-| News Search | Tavily, SerpAPI, Bocha, Brave |
+| News Search | Tavily, SerpAPI, Bocha, Brave, MiniMax |
 
 ### Built-in Trading Rules
 
@@ -75,6 +75,8 @@ Click the `Fork` button in the upper right corner
 Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` → `New repository secret`
 
 **AI Model Configuration (Choose one)**
+
+> For detailed configuration, see [LLM Config Guide](LLM_CONFIG_GUIDE_EN.md) (three-tier config, channels, Vision, Agent, troubleshooting).
 
 | Secret Name | Description | Required |
 |------------|------|:----:|
@@ -119,6 +121,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 |------------|------|:----:|
 | `STOCK_LIST` | Watchlist codes, e.g., `600519,AAPL,hk00700` | ✅ |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) Search API (for news) | Recommended |
+| `MINIMAX_API_KEYS` | [MiniMax](https://platform.minimaxi.com/) Coding Plan Web Search (structured search results) | Optional |
 | `BRAVE_API_KEYS` | [Brave Search](https://brave.com/search/api/) API (privacy-focused, US stocks optimized) | Optional |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/baidu-search-api?utm_source=github_daily_stock_analysis) Backup search | Optional |
 | `BOCHA_API_KEYS` | [Bocha Search](https://open.bocha.cn/) Web Search API (Chinese search optimized, supports AI summaries, multiple keys comma-separated) | Optional |
@@ -133,6 +136,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | Market | Format | Examples |
 |--------|--------|----------|
 | A-shares | 6-digit number | `600519`, `000001`, `300750` |
+| BSE (Beijing) | 8/4/92 prefix, 6-digit | `920748`, `838163`, `430047` |
 | HK Stocks | hk + 5-digit number | `hk00700`, `hk09988` |
 | US Stocks | 1-5 uppercase letters | `AAPL`, `TSLA`, `GOOGL` |
 
@@ -510,5 +514,6 @@ The developers of this tool are not liable for any financial losses resulting fr
 
 - GitHub Issues: [Report bugs or request features](https://github.com/ZhuLinsen/daily_stock_analysis/issues)
 - Discussions: [Join discussions](https://github.com/ZhuLinsen/daily_stock_analysis/discussions)
+- Email: zhuls345@gmail.com
 
 ----

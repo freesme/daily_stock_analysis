@@ -310,6 +310,18 @@ class TestPushplusSender(unittest.TestCase):
         result = sender.send_to_pushplus("hello")
         self.assertTrue(result)
 
+    @mock.patch("src.notification_sender.pushplus_sender.time.sleep")
+    @mock.patch("src.notification_sender.pushplus_sender.requests.post")
+    def test_send_long_message_chunks_pushplus_requests(self, mock_post, _mock_sleep):
+        mock_post.return_value = _response(200, {"code": 200})
+        cfg = _config(pushplus_token="TOKEN")
+        sender = PushplusSender(cfg)
+
+        result = sender.send_to_pushplus("A" * 25000)
+
+        self.assertTrue(result)
+        self.assertGreaterEqual(mock_post.call_count, 2)
+
 
 class TestServerchan3Sender(unittest.TestCase):
     """Unit tests for Serverchan3Sender."""

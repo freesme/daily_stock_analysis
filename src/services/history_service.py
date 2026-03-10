@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
 from src.storage import DatabaseManager
+from src.utils.data_processing import normalize_model_used, parse_json_field
 
 logger = logging.getLogger(__name__)
 
@@ -192,16 +193,46 @@ class HistoryService:
             logger.error(f"根据 ID 查询历史详情失败: {e}", exc_info=True)
             return None
 
+    @staticmethod
+    def _normalize_display_sniper_value(value: Any) -> Optional[str]:
+        """Normalize sniper point values for history display."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text in {"-", "—", "N/A"}:
+            return None
+        return text
+
+    def _get_display_sniper_points(self, record, raw_result: Any) -> Dict[str, Optional[str]]:
+        """Prefer raw dashboard sniper strings for history display, then fall back to numeric DB columns."""
+        raw_points: Dict[str, Any] = {}
+        if isinstance(raw_result, dict):
+            for candidate in (raw_result.get("dashboard"), raw_result):
+                if not isinstance(candidate, dict):
+                    continue
+                raw_points = DatabaseManager._find_sniper_in_dashboard(candidate) or raw_points
+                if any(raw_points.get(k) is not None for k in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit")):
+                    break
+
+        display_points: Dict[str, Optional[str]] = {}
+        for field in ("ideal_buy", "secondary_buy", "stop_loss", "take_profit"):
+            raw_value = self._normalize_display_sniper_value(raw_points.get(field))
+            if raw_value is not None:
+                display_points[field] = raw_value
+                continue
+            db_value = getattr(record, field, None)
+            display_points[field] = str(db_value) if db_value is not None else None
+        return display_points
+
     def _record_to_detail_dict(self, record) -> Dict[str, Any]:
         """
         Convert an AnalysisHistory ORM record to a detail response dict.
         """
-        raw_result = None
-        if record.raw_result:
-            try:
-                raw_result = json.loads(record.raw_result)
-            except json.JSONDecodeError:
-                raw_result = record.raw_result
+        raw_result = parse_json_field(record.raw_result)
+
+        model_used = (raw_result or {}).get("model_used") if isinstance(raw_result, dict) else None
+        model_used = normalize_model_used(model_used)
+        sniper_points = self._get_display_sniper_points(record, raw_result)
 
         context_snapshot = None
         if record.context_snapshot:
@@ -217,15 +248,16 @@ class HistoryService:
             "stock_name": record.name,
             "report_type": record.report_type,
             "created_at": record.created_at.isoformat() if record.created_at else None,
+            "model_used": model_used,
             "analysis_summary": record.analysis_summary,
             "operation_advice": record.operation_advice,
             "trend_prediction": record.trend_prediction,
             "sentiment_score": record.sentiment_score,
             "sentiment_label": self._get_sentiment_label(record.sentiment_score or 50),
-            "ideal_buy": str(record.ideal_buy) if record.ideal_buy else None,
-            "secondary_buy": str(record.secondary_buy) if record.secondary_buy else None,
-            "stop_loss": str(record.stop_loss) if record.stop_loss else None,
-            "take_profit": str(record.take_profit) if record.take_profit else None,
+            "ideal_buy": sniper_points.get("ideal_buy"),
+            "secondary_buy": sniper_points.get("secondary_buy"),
+            "stop_loss": sniper_points.get("stop_loss"),
+            "take_profit": sniper_points.get("take_profit"),
             "news_content": record.news_content,
             "raw_result": raw_result,
             "context_snapshot": context_snapshot,

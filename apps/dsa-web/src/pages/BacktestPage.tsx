@@ -1,7 +1,9 @@
 import type React from 'react';
 import { useState, useEffect, useCallback } from 'react';
 import { backtestApi } from '../api/backtest';
-import { Card, Badge, Pagination } from '../components/common';
+import type { ParsedApiError } from '../api/error';
+import { getParsedApiError } from '../api/error';
+import { ApiErrorAlert, Card, Badge, Pagination } from '../components/common';
 import type {
   BacktestResultItem,
   BacktestRunResponse,
@@ -113,7 +115,8 @@ const BacktestPage: React.FC = () => {
   const [forceRerun, setForceRerun] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [runResult, setRunResult] = useState<BacktestRunResponse | null>(null);
-  const [runError, setRunError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<ParsedApiError | null>(null);
+  const [pageError, setPageError] = useState<ParsedApiError | null>(null);
 
   // Results state
   const [results, setResults] = useState<BacktestResultItem[]>([]);
@@ -135,8 +138,10 @@ const BacktestPage: React.FC = () => {
       setResults(response.items);
       setTotalResults(response.total);
       setCurrentPage(response.page);
+      setPageError(null);
     } catch (err) {
       console.error('Failed to fetch backtest results:', err);
+      setPageError(getParsedApiError(err));
     } finally {
       setIsLoadingResults(false);
     }
@@ -155,8 +160,10 @@ const BacktestPage: React.FC = () => {
       } else {
         setStockPerf(null);
       }
+      setPageError(null);
     } catch (err) {
       console.error('Failed to fetch performance:', err);
+      setPageError(getParsedApiError(err));
     } finally {
       setIsLoadingPerf(false);
     }
@@ -197,7 +204,7 @@ const BacktestPage: React.FC = () => {
       fetchResults(1, codeFilter.trim() || undefined, evalWindowDays);
       fetchPerformance(codeFilter.trim() || undefined, evalWindowDays);
     } catch (err) {
-      setRunError(err instanceof Error ? err.message : 'Backtest failed');
+      setRunError(getParsedApiError(err));
     } finally {
       setIsRunning(false);
     }
@@ -307,7 +314,7 @@ const BacktestPage: React.FC = () => {
           </div>
         )}
         {runError && (
-          <p className="mt-2 text-xs text-danger">{runError}</p>
+          <ApiErrorAlert error={runError} className="mt-2 max-w-4xl" />
         )}
       </header>
 
@@ -336,6 +343,9 @@ const BacktestPage: React.FC = () => {
 
         {/* Right content - Results table */}
         <section className="flex-1 overflow-y-auto">
+          {pageError ? (
+            <ApiErrorAlert error={pageError} className="mb-3" />
+          ) : null}
           {isLoadingResults ? (
             <div className="flex flex-col items-center justify-center h-64">
               <div className="w-10 h-10 border-3 border-cyan/20 border-t-cyan rounded-full animate-spin" />

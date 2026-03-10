@@ -20,6 +20,12 @@ from unittest.mock import MagicMock, patch, call
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+# Keep this test runnable when optional LLM runtime deps are not installed.
+try:
+    import litellm  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["litellm"] = MagicMock()
+
 from src.agent.executor import AgentExecutor, AgentResult
 from src.agent.llm_adapter import LLMResponse, ToolCall
 from src.agent.tools.registry import ToolRegistry, ToolDefinition, ToolParameter
@@ -252,6 +258,58 @@ class TestAgentExecutor(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertFalse(result.tool_calls_log[0]["success"])
+
+    def test_model_trace_deduplicates_and_keeps_order(self):
+        """Model trace should keep call order and de-duplicate repeated models."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+
+        step1 = LLMResponse(
+            content="first tool call",
+            tool_calls=[ToolCall(id="m1", name="echo", arguments={"message": "a"})],
+            usage={"total_tokens": 10},
+            provider="gemini",
+            model="gemini/gemini-2.0-flash",
+        )
+        step2 = LLMResponse(
+            content="second tool call",
+            tool_calls=[ToolCall(id="m2", name="echo", arguments={"message": "b"})],
+            usage={"total_tokens": 10},
+            provider="gemini",
+            model="gemini/gemini-2.0-flash",
+        )
+        step3 = LLMResponse(
+            content=json.dumps(SAMPLE_DASHBOARD, ensure_ascii=False),
+            tool_calls=[],
+            usage={"total_tokens": 10},
+            provider="openai",
+            model="openai/gpt-4o-mini",
+        )
+        adapter.call_with_tools.side_effect = [step1, step2, step3]
+
+        executor = AgentExecutor(registry, adapter, max_steps=5)
+        result = executor.run("Analyze 600519")
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.model, "gemini/gemini-2.0-flash, openai/gpt-4o-mini")
+
+    def test_model_trace_skips_error_provider(self):
+        """Error provider placeholder should not appear in model trace."""
+        registry = _make_registry_with_echo()
+        adapter = _make_mock_adapter()
+        adapter.call_with_tools.return_value = LLMResponse(
+            content="llm failed",
+            tool_calls=[],
+            usage={"total_tokens": 3},
+            provider="error",
+            model="",
+        )
+
+        executor = AgentExecutor(registry, adapter, max_steps=2)
+        result = executor.run("Analyze 600519")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.model, "")
 
 
 # ============================================================

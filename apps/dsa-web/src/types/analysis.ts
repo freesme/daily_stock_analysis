@@ -24,6 +24,7 @@ export interface ReportMeta {
   createdAt: string;
   currentPrice?: number;
   changePct?: number;
+  modelUsed?: string;  // 分析使用的 LLM 模型（Issue #528）
 }
 
 /** 情绪标签 */

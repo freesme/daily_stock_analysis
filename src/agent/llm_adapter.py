@@ -41,6 +41,7 @@ class LLMResponse:
     reasoning_content: Optional[str] = None  # Chain-of-thought (CoT) from DeepSeek thinking mode; must be passed back in multi-turn assistant messages; None for other providers
     usage: Dict[str, Any] = field(default_factory=dict)       # token usage info
     provider: str = ""                     # which provider handled this call
+    model: str = ""                        # full model name used (e.g. gemini/gemini-2.0-flash), for report meta
     raw: Any = None                        # raw provider response for debugging
 
 
@@ -370,5 +371,6 @@ class LLMToolAdapter:
             reasoning_content=reasoning_content,
             usage=usage,
             provider=provider_name,
+            model=model,
             raw=response,
         )

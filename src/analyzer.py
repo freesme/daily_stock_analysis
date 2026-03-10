@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import litellm
 from json_repair import repair_json
@@ -22,66 +22,73 @@ from litellm import Router
 
 from src.agent.llm_adapter import get_thinking_extra_body
 from src.config import Config, get_config, get_api_keys_for_model, extra_litellm_params
+from src.storage import persist_llm_usage
+from src.data.stock_mapping import STOCK_NAME_MAP
+from src.schemas.report_schema import AnalysisReportSchema
 
 logger = logging.getLogger(__name__)
 
 
-# 股票名称映射（常见股票）
-STOCK_NAME_MAP = {
-    # === A股 ===
-    '600519': '贵州茅台',
-    '000001': '平安银行',
-    '300750': '宁德时代',
-    '002594': '比亚迪',
-    '600036': '招商银行',
-    '601318': '中国平安',
-    '000858': '五粮液',
-    '600276': '恒瑞医药',
-    '601012': '隆基绿能',
-    '002475': '立讯精密',
-    '300059': '东方财富',
-    '002415': '海康威视',
-    '600900': '长江电力',
-    '601166': '兴业银行',
-    '600028': '中国石化',
+def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
+    """
+    Check mandatory fields for report content integrity.
+    Returns (pass, missing_fields). Module-level for use by pipeline (agent weak mode).
+    """
+    missing: List[str] = []
+    if result.sentiment_score is None:
+        missing.append("sentiment_score")
+    if not (result.operation_advice or "").strip():
+        missing.append("operation_advice")
+    if not (result.analysis_summary or "").strip():
+        missing.append("analysis_summary")
+    dash = result.dashboard or {}
+    core = dash.get("core_conclusion") or {}
+    if not (core.get("one_sentence") or "").strip():
+        missing.append("dashboard.core_conclusion.one_sentence")
+    intel = dash.get("intelligence")
+    if intel is None or "risk_alerts" not in intel:
+        missing.append("dashboard.intelligence.risk_alerts")
+    if result.decision_type in ("buy", "hold"):
+        battle = dash.get("battle_plan") or {}
+        sp = battle.get("sniper_points") or {}
+        stop_loss = sp.get("stop_loss")
+        if stop_loss is None or (isinstance(stop_loss, str) and not stop_loss.strip()):
+            missing.append("dashboard.battle_plan.sniper_points.stop_loss")
+    return len(missing) == 0, missing
 
-    # === 美股 ===
-    'AAPL': '苹果',
-    'TSLA': '特斯拉',
-    'MSFT': '微软',
-    'GOOGL': '谷歌A',
-    'GOOG': '谷歌C',
-    'AMZN': '亚马逊',
-    'NVDA': '英伟达',
-    'META': 'Meta',
-    'AMD': 'AMD',
-    'INTC': '英特尔',
-    'BABA': '阿里巴巴',
-    'PDD': '拼多多',
-    'JD': '京东',
-    'BIDU': '百度',
-    'NIO': '蔚来',
-    'XPEV': '小鹏汽车',
-    'LI': '理想汽车',
-    'COIN': 'Coinbase',
-    'MSTR': 'MicroStrategy',
 
-    # === 港股 (5位数字) ===
-    '00700': '腾讯控股',
-    '03690': '美团',
-    '01810': '小米集团',
-    '09988': '阿里巴巴',
-    '09618': '京东集团',
-    '09888': '百度集团',
-    '01024': '快手',
-    '00981': '中芯国际',
-    '02015': '理想汽车',
-    '09868': '小鹏汽车',
-    '00005': '汇丰控股',
-    '01299': '友邦保险',
-    '00941': '中国移动',
-    '00883': '中国海洋石油',
-}
+def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) -> None:
+    """Fill missing mandatory fields with placeholders (in-place). Module-level for pipeline."""
+    for field in missing_fields:
+        if field == "sentiment_score":
+            result.sentiment_score = 50
+        elif field == "operation_advice":
+            result.operation_advice = result.operation_advice or "待补充"
+        elif field == "analysis_summary":
+            result.analysis_summary = result.analysis_summary or "待补充"
+        elif field == "dashboard.core_conclusion.one_sentence":
+            if not result.dashboard:
+                result.dashboard = {}
+            if "core_conclusion" not in result.dashboard:
+                result.dashboard["core_conclusion"] = {}
+            result.dashboard["core_conclusion"]["one_sentence"] = (
+                result.dashboard["core_conclusion"].get("one_sentence") or "待补充"
+            )
+        elif field == "dashboard.intelligence.risk_alerts":
+            if not result.dashboard:
+                result.dashboard = {}
+            if "intelligence" not in result.dashboard:
+                result.dashboard["intelligence"] = {}
+            if "risk_alerts" not in result.dashboard["intelligence"]:
+                result.dashboard["intelligence"]["risk_alerts"] = []
+        elif field == "dashboard.battle_plan.sniper_points.stop_loss":
+            if not result.dashboard:
+                result.dashboard = {}
+            if "battle_plan" not in result.dashboard:
+                result.dashboard["battle_plan"] = {}
+            if "sniper_points" not in result.dashboard["battle_plan"]:
+                result.dashboard["battle_plan"]["sniper_points"] = {}
+            result.dashboard["battle_plan"]["sniper_points"]["stop_loss"] = "待补充"
 
 
 def get_stock_name_multi_source(
@@ -203,6 +210,12 @@ class AnalysisResult:
     current_price: Optional[float] = None  # 分析时的股价
     change_pct: Optional[float] = None     # 分析时的涨跌幅(%)
 
+    # ========== 模型标记（Issue #528）==========
+    model_used: Optional[str] = None  # 分析使用的 LLM 模型（完整名，如 gemini/gemini-2.0-flash）
+
+    # ========== 历史对比（Report Engine P0）==========
+    query_id: Optional[str] = None  # 本次分析 query_id，用于历史对比时排除本次记录
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -237,6 +250,7 @@ class AnalysisResult:
             'error_message': self.error_message,
             'current_price': self.current_price,
             'change_pct': self.change_pct,
+            'model_used': self.model_used,
         }
 
     def get_core_conclusion(self) -> str:
@@ -604,7 +618,7 @@ class GeminiAnalyzer:
         """Check if LiteLLM is properly configured with at least one API key."""
         return self._router is not None or self._litellm_available
 
-    def _call_litellm(self, prompt: str, generation_config: dict) -> str:
+    def _call_litellm(self, prompt: str, generation_config: dict) -> Tuple[str, str, Dict[str, Any]]:
         """Call LLM via litellm with fallback across configured models.
 
         When channels/YAML are configured, every model goes through the Router
@@ -617,7 +631,8 @@ class GeminiAnalyzer:
             generation_config: Dict with optional keys: temperature, max_output_tokens, max_tokens.
 
         Returns:
-            Response text from LLM.
+            Tuple of (response text, model_used, usage). On success model_used is the full model
+            name and usage is a dict with prompt_tokens, completion_tokens, total_tokens.
         """
         config = get_config()
         max_tokens = (
@@ -664,7 +679,14 @@ class GeminiAnalyzer:
                     response = litellm.completion(**call_kwargs)
 
                 if response and response.choices and response.choices[0].message.content:
-                    return response.choices[0].message.content
+                    usage: Dict[str, Any] = {}
+                    if response.usage:
+                        usage = {
+                            "prompt_tokens": response.usage.prompt_tokens or 0,
+                            "completion_tokens": response.usage.completion_tokens or 0,
+                            "total_tokens": response.usage.total_tokens or 0,
+                        }
+                    return (response.choices[0].message.content, model, usage)
                 raise ValueError("LLM returned empty response")
 
             except Exception as e:
@@ -695,10 +717,15 @@ class GeminiAnalyzer:
             Response text, or None if the LLM call fails (error is logged).
         """
         try:
-            return self._call_litellm(
+            result = self._call_litellm(
                 prompt,
                 generation_config={"max_tokens": max_tokens, "temperature": temperature},
             )
+            if isinstance(result, tuple):
+                text, model_used, usage = result
+                persist_llm_usage(usage, model_used, call_type="market_review")
+                return text
+            return result
         except Exception as exc:
             logger.error("[generate_text] LLM call failed: %s", exc)
             return None
@@ -756,6 +783,7 @@ class GeminiAnalyzer:
                 risk_warning='请配置 LLM API Key（GEMINI_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY）后重试',
                 success=False,
                 error_message='LLM API Key 未配置',
+                model_used=None,
             )
         
         try:
@@ -782,27 +810,63 @@ class GeminiAnalyzer:
 
             logger.info(f"[LLM调用] 开始调用 {model_name}...")
 
-            # 使用 litellm 调用
-            start_time = time.time()
-            response_text = self._call_litellm(prompt, generation_config)
-            elapsed = time.time() - start_time
+            # 使用 litellm 调用（支持完整性校验重试）
+            current_prompt = prompt
+            retry_count = 0
+            max_retries = config.report_integrity_retry if config.report_integrity_enabled else 0
 
-            # 记录响应信息
-            logger.info(f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符")
-            
-            # 记录响应预览（INFO级别）和完整响应（DEBUG级别）
-            response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
-            logger.info(f"[LLM返回 预览]\n{response_preview}")
-            logger.debug(f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ===")
-            
-            # 解析响应
-            result = self._parse_response(response_text, code, name)
-            result.raw_response = response_text
-            result.search_performed = bool(news_context)
-            result.market_snapshot = self._build_market_snapshot(context)
+            while True:
+                start_time = time.time()
+                response_text, model_used, llm_usage = self._call_litellm(current_prompt, generation_config)
+                elapsed = time.time() - start_time
+
+                # 记录响应信息
+                logger.info(
+                    f"[LLM返回] {model_name} 响应成功, 耗时 {elapsed:.2f}s, 响应长度 {len(response_text)} 字符"
+                )
+                response_preview = response_text[:300] + "..." if len(response_text) > 300 else response_text
+                logger.info(f"[LLM返回 预览]\n{response_preview}")
+                logger.debug(
+                    f"=== {model_name} 完整响应 ({len(response_text)}字符) ===\n{response_text}\n=== End Response ==="
+                )
+
+                # 解析响应
+                result = self._parse_response(response_text, code, name)
+                result.raw_response = response_text
+                result.search_performed = bool(news_context)
+                result.market_snapshot = self._build_market_snapshot(context)
+                result.model_used = model_used
+
+                # 内容完整性校验（可选）
+                if not config.report_integrity_enabled:
+                    break
+                pass_integrity, missing_fields = self._check_content_integrity(result)
+                if pass_integrity:
+                    break
+                if retry_count < max_retries:
+                    current_prompt = self._build_integrity_retry_prompt(
+                        prompt,
+                        response_text,
+                        missing_fields,
+                    )
+                    retry_count += 1
+                    logger.info(
+                        "[LLM完整性] 必填字段缺失 %s，第 %d 次补全重试",
+                        missing_fields,
+                        retry_count,
+                    )
+                else:
+                    self._apply_placeholder_fill(result, missing_fields)
+                    logger.warning(
+                        "[LLM完整性] 必填字段缺失 %s，已占位补全，不阻塞流程",
+                        missing_fields,
+                    )
+                    break
+
+            persist_llm_usage(llm_usage, model_used, call_type="analysis", stock_code=code)
 
             logger.info(f"[LLM解析] {name}({code}) 分析完成: {result.trend_prediction}, 评分 {result.sentiment_score}")
-            
+
             return result
             
         except Exception as e:
@@ -818,6 +882,7 @@ class GeminiAnalyzer:
                 risk_warning='分析失败，请稍后重试或手动分析',
                 success=False,
                 error_message=str(e),
+                model_used=None,
             )
     
     def _format_prompt(
@@ -1104,6 +1169,48 @@ class GeminiAnalyzer:
 
         return snapshot
 
+    def _check_content_integrity(self, result: AnalysisResult) -> Tuple[bool, List[str]]:
+        """Delegate to module-level check_content_integrity."""
+        return check_content_integrity(result)
+
+    def _build_integrity_complement_prompt(self, missing_fields: List[str]) -> str:
+        """Build complement instruction for missing mandatory fields."""
+        lines = ["### 补全要求：请在上方分析基础上补充以下必填内容，并输出完整 JSON："]
+        for f in missing_fields:
+            if f == "sentiment_score":
+                lines.append("- sentiment_score: 0-100 综合评分")
+            elif f == "operation_advice":
+                lines.append("- operation_advice: 买入/加仓/持有/减仓/卖出/观望")
+            elif f == "analysis_summary":
+                lines.append("- analysis_summary: 综合分析摘要")
+            elif f == "dashboard.core_conclusion.one_sentence":
+                lines.append("- dashboard.core_conclusion.one_sentence: 一句话决策")
+            elif f == "dashboard.intelligence.risk_alerts":
+                lines.append("- dashboard.intelligence.risk_alerts: 风险警报列表（可为空数组）")
+            elif f == "dashboard.battle_plan.sniper_points.stop_loss":
+                lines.append("- dashboard.battle_plan.sniper_points.stop_loss: 止损价")
+        return "\n".join(lines)
+
+    def _build_integrity_retry_prompt(
+        self,
+        base_prompt: str,
+        previous_response: str,
+        missing_fields: List[str],
+    ) -> str:
+        """Build retry prompt using the previous response as the complement baseline."""
+        complement = self._build_integrity_complement_prompt(missing_fields)
+        previous_output = previous_response.strip()
+        return "\n\n".join([
+            base_prompt,
+            "### 上一次输出如下，请在该输出基础上补齐缺失字段，并重新输出完整 JSON。不要省略已有字段：",
+            previous_output,
+            complement,
+        ])
+
+    def _apply_placeholder_fill(self, result: AnalysisResult, missing_fields: List[str]) -> None:
+        """Delegate to module-level apply_placeholder_fill."""
+        apply_placeholder_fill(result, missing_fields)
+
     def _parse_response(
         self, 
         response_text: str, 
@@ -1135,7 +1242,16 @@ class GeminiAnalyzer:
                 json_str = self._fix_json_string(json_str)
                 
                 data = json.loads(json_str)
-                
+
+                # Schema validation (lenient: on failure, continue with raw dict)
+                try:
+                    AnalysisReportSchema.model_validate(data)
+                except Exception as e:
+                    logger.warning(
+                        "LLM report schema validation failed, continuing with raw dict: %s",
+                        str(e)[:100],
+                    )
+
                 # 提取 dashboard 数据
                 dashboard = data.get('dashboard', None)
 

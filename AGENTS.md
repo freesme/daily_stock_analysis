@@ -88,13 +88,42 @@
 - 功能开发、缺陷修复完成后，必须同步更新文档：
   - `README.md`（用户可见能力、使用方式、配置项变化）
   - `docs/CHANGELOG.md`（版本变更记录、影响范围、兼容性说明）
-  - GitHub Releases 页面内容由 `.github/release.yml` 按 PR label 自动分类生成，无需手动维护
 - 自动版本标签默认**不触发**，需在提交说明中显式添加对应标签才会创建 tag：
   - `#patch`：修复类、小改动（+0.0.1）
   - `#minor`：新增可用功能、向后兼容（+0.1.0）
   - `#major`：破坏性变更或重大架构调整（+1.0.0）
   - 不添加任何标签：默认不创建 tag
-- 若改动用于解决已有 issue，PR description 必须声明关闭该 issue（`Fixes #xxx` / `Closes #xxx`），避免修复完成后 issue 悬挂。
+- 若改动用于解决已有 issue，commit 或 PR description 必须声明关闭该 issue（`Fixes #xxx` / `Closes #xxx`），避免修复完成后 issue 悬挂。
+
+### Tag 与 Release 规范
+
+**Tag 必须使用 annotated tag（带 `-m` 注释），禁止使用轻量 tag。**
+
+```bash
+# 正确：annotated tag，-m 内容即 GitHub Release 的正文
+git tag -a v3.x.x -m "Bug fixes:
+- fix(xxx): 描述 (#issue)
+
+Features:
+- feat(xxx): 描述 (#issue)"
+git push origin v3.x.x
+```
+
+- CI（`docker-publish.yml`）会校验 tag 是否有非空注释，轻量 tag 会直接失败。
+- `.github/workflows/create-release.yml` 会在 tag 推送后**自动以注释内容创建 GitHub Release**，无需手动编辑。
+
+**GitHub Release 的 "What's Changed" 自动生成规则（`.github/release.yml`）：**
+
+- 内容来源：两个 tag 之间**合并的 PR**，按 PR label 分类。
+- 直接 `git commit` 推送的提交**不会出现**在自动生成内容中。
+- 因此，团队规范：
+  - 对用户可见的功能/修复，优先通过 **PR** 合入，并打好 label（`bug` / `enhancement` / `data-source` 等）。
+  - 若直接推送了 commit（如紧急修复），需在 tag 的 `-m` 注释中**手动补充**这些变更，确保 Release Notes 完整。
+
+**`docs/CHANGELOG.md` 维护规则：**
+
+- 新增版本条目时，将 `[Unreleased]` 下的内容移入 `## [X.Y.Z] - YYYY-MM-DD` 并重置 `[Unreleased]` 为空。
+- 打 tag 前不强制要求 CHANGELOG 同步（CI 已改为校验 tag 注释），但建议保持同步。
 
 ## 5. 建议评审输出格式
 

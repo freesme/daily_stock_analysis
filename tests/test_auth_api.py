@@ -2,12 +2,19 @@
 """Integration tests for auth API endpoints (login, logout, change-password, API protection)."""
 
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from fastapi.testclient import TestClient
+
+# Keep this test runnable when optional LLM runtime deps are not installed.
+try:
+    import litellm  # noqa: F401
+except ModuleNotFoundError:
+    sys.modules["litellm"] = MagicMock()
 
 import src.auth as auth
 from api.app import create_app

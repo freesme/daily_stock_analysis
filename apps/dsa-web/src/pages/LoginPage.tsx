@@ -1,6 +1,9 @@
 import type React from 'react';
 import { useState } from 'react';
+import { ApiErrorAlert } from '../components/common';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import type { ParsedApiError } from '../api/error';
+import { isParsedApiError } from '../api/error';
 import { useAuth } from '../hooks';
 import { SettingsAlert } from '../components/settings';
 
@@ -15,7 +18,7 @@ const LoginPage: React.FC = () => {
   const [password, setPassword] = useState('');
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | ParsedApiError | null>(null);
 
   const isFirstTime = !passwordSet;
 
@@ -90,14 +93,18 @@ const LoginPage: React.FC = () => {
             </div>
           ) : null}
 
-          {error ? (
-            <SettingsAlert
-              title={isFirstTime ? '设置失败' : '登录失败'}
-              message={error}
-              variant="error"
-              className="!mt-3"
-            />
-          ) : null}
+          {error
+            ? isParsedApiError(error)
+              ? <ApiErrorAlert error={error} className="!mt-3" />
+              : (
+                <SettingsAlert
+                  title={isFirstTime ? '设置失败' : '登录失败'}
+                  message={error}
+                  variant="error"
+                  className="!mt-3"
+                />
+              )
+            : null}
 
           <button
             type="submit"

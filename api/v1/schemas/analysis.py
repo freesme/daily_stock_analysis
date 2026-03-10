@@ -38,9 +38,9 @@ class AnalyzeRequest(BaseModel):
         example=["600519", "000858"]
     )
     report_type: str = Field(
-        "detailed", 
+        "detailed",
         description="报告类型",
-        pattern="^(simple|detailed)$"
+        pattern="^(simple|detailed|brief)$",
     )
     force_refresh: bool = Field(
         True,

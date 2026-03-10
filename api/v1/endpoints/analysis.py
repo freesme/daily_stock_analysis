@@ -50,6 +50,7 @@ from src.services.task_queue import (
     DuplicateTaskError,
     TaskStatus as TaskStatusEnum,
 )
+from src.utils.data_processing import normalize_model_used, parse_json_field
 
 logger = logging.getLogger(__name__)
 
@@ -437,6 +438,10 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 
         if records:
             record = records[0]
+            raw_result = parse_json_field(record.raw_result)
+            model_used = normalize_model_used(
+                (raw_result or {}).get("model_used") if isinstance(raw_result, dict) else None
+            )
             # Build report from DB record so completed tasks return real data
             report_dict = AnalysisReport(
                 meta=ReportMeta(
@@ -446,6 +451,7 @@ def get_analysis_status(task_id: str) -> TaskStatus:
                     stock_name=record.name,
                     report_type=getattr(record, 'report_type', None),
                     created_at=record.created_at.isoformat() if record.created_at else None,
+                    model_used=model_used,
                 ),
                 summary=ReportSummary(
                     sentiment_score=record.sentiment_score,
@@ -529,6 +535,7 @@ def _build_analysis_report(
         created_at=meta_data.get("created_at", datetime.now().isoformat()),
         current_price=meta_data.get("current_price"),
         change_pct=meta_data.get("change_pct"),
+        model_used=normalize_model_used(meta_data.get("model_used")),
     )
 
     summary = ReportSummary(

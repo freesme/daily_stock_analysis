@@ -1,6 +1,8 @@
 import { useState, useMemo, useCallback } from 'react';
 import type React from 'react';
-import { EyeToggleIcon } from '../common';
+import type { ParsedApiError } from '../../api/error';
+import { getParsedApiError } from '../../api/error';
+import { ApiErrorAlert, EyeToggleIcon } from '../common';
 import { systemConfigApi } from '../../api/systemConfig';
 
 /** Well-known channel presets for quick-add dropdown. */
@@ -146,7 +148,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
 
   const [channels, setChannels] = useState<ChannelConfig[]>(initialChannels);
   const [isSaving, setIsSaving] = useState(false);
-  const [saveMessage, setSaveMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [saveMessage, setSaveMessage] = useState<
+    { type: 'success'; text: string } | { type: 'error'; error: ParsedApiError } | null
+  >(null);
   const [visibleKeys, setVisibleKeys] = useState<Record<number, boolean>>({});
   const [isCollapsed, setIsCollapsed] = useState(initialChannels.length === 0);
   const [addPreset, setAddPreset] = useState('aihubmix');
@@ -217,8 +221,7 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
       setSaveMessage({ type: 'success', text: '渠道配置已保存' });
       onSaved();
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : '保存失败';
-      setSaveMessage({ type: 'error', text: msg });
+      setSaveMessage({ type: 'error', error: getParsedApiError(error) });
     } finally {
       setIsSaving(false);
     }
@@ -386,11 +389,9 @@ export const LLMChannelEditor: React.FC<LLMChannelEditorProps> = ({
           )}
 
           {saveMessage && (
-            <p
-              className={`text-xs ${saveMessage.type === 'success' ? 'text-green-400' : 'text-red-400'}`}
-            >
-              {saveMessage.text}
-            </p>
+            saveMessage.type === 'success'
+              ? <p className="text-xs text-green-400">{saveMessage.text}</p>
+              : <ApiErrorAlert error={saveMessage.error} />
           )}
         </div>
       )}

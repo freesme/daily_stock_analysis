@@ -38,6 +38,7 @@ from sqlalchemy import (
     and_,
     delete,
     desc,
+    func,
 )
 from sqlalchemy.orm import (
     declarative_base,
@@ -376,6 +377,22 @@ class ConversationMessage(Base):
     role = Column(String(20), nullable=False)  # user, assistant, system
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, default=datetime.now, index=True)
+
+
+class LLMUsage(Base):
+    """One row per litellm.completion() call — token-usage audit log."""
+
+    __tablename__ = 'llm_usage'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 'analysis' | 'agent' | 'market_review'
+    call_type = Column(String(32), nullable=False, index=True)
+    model = Column(String(128), nullable=False)
+    stock_code = Column(String(16), nullable=True)
+    prompt_tokens = Column(Integer, nullable=False, default=0)
+    completion_tokens = Column(Integer, nullable=False, default=0)
+    total_tokens = Column(Integer, nullable=False, default=0)
+    called_at = Column(DateTime, default=datetime.now, index=True)
 
 
 class DatabaseManager:
@@ -788,7 +805,8 @@ class DatabaseManager:
         code: Optional[str] = None,
         query_id: Optional[str] = None,
         days: int = 30,
-        limit: int = 50
+        limit: int = 50,
+        exclude_query_id: Optional[str] = None,
     ) -> List[AnalysisHistory]:
         """
         Query analysis history records.
@@ -796,6 +814,7 @@ class DatabaseManager:
         Notes:
         - If query_id is provided, perform exact lookup and ignore days window.
         - If query_id is not provided, apply days-based time filtering.
+        - exclude_query_id: exclude records with this query_id (for history comparison).
         """
         cutoff_date = datetime.now() - timedelta(days=days)
 
@@ -809,6 +828,10 @@ class DatabaseManager:
 
             if code:
                 conditions.append(AnalysisHistory.code == code)
+
+            # exclude_query_id only applies when not doing exact lookup (query_id is None)
+            if exclude_query_id and not query_id:
+                conditions.append(AnalysisHistory.query_id != exclude_query_id)
 
             results = session.execute(
                 select(AnalysisHistory)
@@ -1235,12 +1258,19 @@ class DatabaseManager:
                 except ValueError:
                     pass
 
-        # 兜底：无"元"字时（如 "102.10-103.00（MA5附近）"），
-        # 提取最后一个非 MA 前缀的数字
+        # 兜底：无"元"字时，先截去第一个括号后的内容，避免误提取括号内技术指标数字
+        # 例如 "1.52-1.53 (回踩MA5/10附近)" → 仅在 "1.52-1.53 " 中搜索
+        paren_pos = len(text)
+        for paren_char in ('(', '（'):
+            pos = text.find(paren_char)
+            if pos != -1:
+                paren_pos = min(paren_pos, pos)
+        search_text = text[:paren_pos].strip() or text  # 括号前为空时降级用全文
+
         valid_numbers = []
-        for m in re.finditer(r"\d+(?:\.\d+)?", text):
+        for m in re.finditer(r"\d+(?:\.\d+)?", search_text):
             start_idx = m.start()
-            if start_idx >= 2 and text[start_idx-2:start_idx].upper() == "MA":
+            if start_idx >= 2 and search_text[start_idx-2:start_idx].upper() == "MA":
                 continue
             valid_numbers.append(m.group())
         if valid_numbers:
@@ -1448,11 +1478,120 @@ class DatabaseManager:
             )
             return result.rowcount
 
+    # ------------------------------------------------------------------
+    # LLM usage tracking
+    # ------------------------------------------------------------------
+
+    def record_llm_usage(
+        self,
+        call_type: str,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        stock_code: Optional[str] = None,
+    ) -> None:
+        """Append one LLM call record to llm_usage."""
+        row = LLMUsage(
+            call_type=call_type,
+            model=model or "unknown",
+            stock_code=stock_code,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+        with self.session_scope() as session:
+            session.add(row)
+
+    def get_llm_usage_summary(
+        self,
+        from_dt: datetime,
+        to_dt: datetime,
+    ) -> Dict[str, Any]:
+        """Return aggregated token usage between from_dt and to_dt.
+
+        Returns a dict with keys:
+          total_calls, total_tokens,
+          by_call_type: list of {call_type, calls, total_tokens},
+          by_model:     list of {model, calls, total_tokens}
+        """
+        with self.session_scope() as session:
+            base_filter = and_(
+                LLMUsage.called_at >= from_dt,
+                LLMUsage.called_at <= to_dt,
+            )
+
+            # Overall totals
+            totals = session.execute(
+                select(
+                    func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                ).where(base_filter)
+            ).one()
+
+            # Breakdown by call_type
+            by_type_rows = session.execute(
+                select(
+                    LLMUsage.call_type,
+                    func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                )
+                .where(base_filter)
+                .group_by(LLMUsage.call_type)
+                .order_by(desc(func.sum(LLMUsage.total_tokens)))
+            ).all()
+
+            # Breakdown by model
+            by_model_rows = session.execute(
+                select(
+                    LLMUsage.model,
+                    func.count(LLMUsage.id).label("calls"),
+                    func.coalesce(func.sum(LLMUsage.total_tokens), 0).label("tokens"),
+                )
+                .where(base_filter)
+                .group_by(LLMUsage.model)
+                .order_by(desc(func.sum(LLMUsage.total_tokens)))
+            ).all()
+
+        return {
+            "total_calls": totals.calls,
+            "total_tokens": totals.tokens,
+            "by_call_type": [
+                {"call_type": r.call_type, "calls": r.calls, "total_tokens": r.tokens}
+                for r in by_type_rows
+            ],
+            "by_model": [
+                {"model": r.model, "calls": r.calls, "total_tokens": r.tokens}
+                for r in by_model_rows
+            ],
+        }
+
 
 # 便捷函数
 def get_db() -> DatabaseManager:
     """获取数据库管理器实例的快捷方式"""
     return DatabaseManager.get_instance()
+
+
+def persist_llm_usage(
+    usage: Dict[str, Any],
+    model: str,
+    call_type: str,
+    stock_code: Optional[str] = None,
+) -> None:
+    """Fire-and-forget: write one LLM call record to llm_usage. Never raises."""
+    try:
+        db = DatabaseManager.get_instance()
+        db.record_llm_usage(
+            call_type=call_type,
+            model=model,
+            prompt_tokens=usage.get("prompt_tokens", 0) or 0,
+            completion_tokens=usage.get("completion_tokens", 0) or 0,
+            total_tokens=usage.get("total_tokens", 0) or 0,
+            stock_code=stock_code,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).warning("[LLM usage] failed to persist usage record: %s", exc)
 
 
 if __name__ == "__main__":

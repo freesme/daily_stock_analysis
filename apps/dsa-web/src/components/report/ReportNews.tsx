@@ -1,6 +1,9 @@
 import type React from 'react';
 import { useState, useEffect, useCallback } from 'react';
+import type { ParsedApiError } from '../../api/error';
+import { getParsedApiError } from '../../api/error';
 import { Card } from '../common';
+import { ApiErrorAlert } from '../common';
 import { historyApi } from '../../api/history';
 import type { NewsIntelItem } from '../../types/analysis';
 
@@ -15,7 +18,7 @@ interface ReportNewsProps {
 export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 20 }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [items, setItems] = useState<NewsIntelItem[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ParsedApiError | null>(null);
 
   const fetchNews = useCallback(async () => {
     if (!recordId) return;
@@ -26,7 +29,7 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 20 }) 
       const response = await historyApi.getNews(recordId, limit);
       setItems(response.items || []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载资讯失败');
+      setError(getParsedApiError(err));
     } finally {
       setIsLoading(false);
     }
@@ -67,16 +70,11 @@ export const ReportNews: React.FC<ReportNewsProps> = ({ recordId, limit = 20 }) 
       </div>
 
       {error && !isLoading && (
-        <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-danger/10 border border-danger/20 text-xs text-danger">
-          <span>{error}</span>
-          <button
-            type="button"
-            onClick={fetchNews}
-            className="text-xs text-cyan hover:text-white transition-colors"
-          >
-            重试
-          </button>
-        </div>
+        <ApiErrorAlert
+          error={error}
+          actionLabel="重试"
+          onAction={() => void fetchNews()}
+        />
       )}
 
       {isLoading && !error && (

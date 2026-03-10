@@ -29,7 +29,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS
+from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, is_bse_code
 import os
 
 logger = logging.getLogger(__name__)
@@ -183,6 +183,12 @@ class BaostockFetcher(BaseFetcher):
         # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         if _is_us_code(stock_code):
             raise DataFetchError(f"BaostockFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
+        
+        # 北交所不支持，抛出异常让 DataFetcherManager 切换到其他数据源
+        if is_bse_code(stock_code):
+            raise DataFetchError(
+                f"BaostockFetcher 不支持北交所 {stock_code}，将自动切换其他数据源"
+            )
         
         # 转换代码格式
         bs_code = self._convert_stock_code(stock_code)

@@ -993,6 +993,10 @@
               "created_at": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "model_used": {
+                "type": "string",
+                "description": "分析使用的 LLM 模型（完整名，如 gemini/gemini-2.0-flash）"
               }
             }
           },

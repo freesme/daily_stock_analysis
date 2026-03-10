@@ -1,7 +1,9 @@
 import type React from 'react';
 import { useState } from 'react';
+import type { ParsedApiError } from '../../api/error';
+import { isParsedApiError } from '../../api/error';
 import { useAuth } from '../../hooks';
-import { EyeToggleIcon } from '../common';
+import { ApiErrorAlert, EyeToggleIcon } from '../common';
 import { SettingsAlert } from './SettingsAlert';
 
 export const ChangePasswordCard: React.FC = () => {
@@ -13,7 +15,7 @@ export const ChangePasswordCard: React.FC = () => {
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | ParsedApiError | null>(null);
   const [success, setSuccess] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -157,9 +159,11 @@ export const ChangePasswordCard: React.FC = () => {
           </div>
         </div>
 
-        {error ? (
-          <SettingsAlert title="修改失败" message={error} variant="error" className="!mt-3" />
-        ) : null}
+        {error
+          ? isParsedApiError(error)
+            ? <ApiErrorAlert error={error} className="!mt-3" />
+            : <SettingsAlert title="修改失败" message={error} variant="error" className="!mt-3" />
+          : null}
         {success ? (
           <p className="text-xs text-green-500">密码已修改成功</p>
         ) : null}

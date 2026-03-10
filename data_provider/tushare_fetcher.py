@@ -31,7 +31,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
+from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote
 from src.config import get_config
 import os
@@ -276,6 +276,10 @@ class TushareFetcher(BaseFetcher):
             return f"{code}.SH"
         if code.startswith(_ETF_SZ_PREFIXES) and len(code) == 6:
             return f"{code}.SZ"
+        
+        # BSE (Beijing Stock Exchange): 8xxxxx, 4xxxxx, 920xxx
+        if is_bse_code(code):
+            return f"{code}.BJ"
         
         # Regular stocks
         # Shanghai: 600xxx, 601xxx, 603xxx, 688xxx (STAR Market)
@@ -565,12 +569,14 @@ class TushareFetcher(BaseFetcher):
             # 简单的指数判断逻辑
             if code_6 == '000001':  # 上证指数
                 symbol = 'sh000001'
-            elif code_6 == '399001': # 深证成指
+            elif code_6 == '399001':  # 深证成指
                 symbol = 'sz399001'
-            elif code_6 == '399006': # 创业板指
+            elif code_6 == '399006':  # 创业板指
                 symbol = 'sz399006'
-            elif code_6 == '000300': # 沪深300
+            elif code_6 == '000300':  # 沪深300
                 symbol = 'sh000300'
+            elif is_bse_code(code_6):  # 北交所
+                symbol = f"bj{code_6}"
             else:
                 symbol = code_6
 
