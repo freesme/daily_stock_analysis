@@ -86,6 +86,19 @@ def _get_akshare_name_to_code() -> Optional[Dict[str, str]]:
         return None
 
 
+def _is_single_char_typo(input_name: str, candidate_name: str) -> bool:
+    """Return True when two names only differ by one character position."""
+    if not input_name or not candidate_name:
+        return False
+    if len(input_name) != len(candidate_name):
+        return False
+    # Keep typo fallback conservative: only for names with enough signal.
+    if len(input_name) < 3:
+        return False
+    diff = sum(1 for a, b in zip(input_name, candidate_name) if a != b)
+    return diff == 1
+
+
 def resolve_name_to_code(name: str) -> Optional[str]:
     """
     Resolve stock name to code.
@@ -147,10 +160,19 @@ def resolve_name_to_code(name: str) -> Optional[str]:
     # e.g. '中国' matching arbitrary company names in a pool of 5000+ stocks.
     # Use a higher cutoff (0.8) to reduce mis-hits on longer inputs as well.
     if len(s) > 2:
-        matches = difflib.get_close_matches(s, list(all_name_to_code.keys()), n=1, cutoff=0.8)
+        names = list(all_name_to_code.keys())
+        matches = difflib.get_close_matches(s, names, n=1, cutoff=0.8)
         if matches:
             logger.debug(f"[NameResolver] 命中模糊匹配: input={s}, matched={matches[0]}")
             return all_name_to_code[matches[0]]
+
+        # Conservative fallback for one-character typo in medium/long names.
+        # This keeps the strict default threshold while fixing obvious misspellings
+        # such as "贵州茅苔" -> "贵州茅台".
+        typo_matches = difflib.get_close_matches(s, names, n=1, cutoff=0.7)
+        if typo_matches and _is_single_char_typo(s, typo_matches[0]):
+            logger.debug(f"[NameResolver] 命中单字误写兜底: input={s}, matched={typo_matches[0]}")
+            return all_name_to_code[typo_matches[0]]
 
     logger.debug(f"[NameResolver] 解析失败: {s}")
     return None

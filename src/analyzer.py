@@ -12,6 +12,7 @@ A股自选股智能分析系统 - AI分析层
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
@@ -21,7 +22,14 @@ from json_repair import repair_json
 from litellm import Router
 
 from src.agent.llm_adapter import get_thinking_extra_body
-from src.config import Config, get_config, get_api_keys_for_model, extra_litellm_params
+from src.config import (
+    Config,
+    extra_litellm_params,
+    get_api_keys_for_model,
+    get_config,
+    get_configured_llm_models,
+    resolve_news_window_days,
+)
 from src.storage import persist_llm_usage
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.schemas.report_schema import AnalysisReportSchema
@@ -37,20 +45,26 @@ def check_content_integrity(result: "AnalysisResult") -> Tuple[bool, List[str]]:
     missing: List[str] = []
     if result.sentiment_score is None:
         missing.append("sentiment_score")
-    if not (result.operation_advice or "").strip():
+    advice = result.operation_advice
+    if not advice or not isinstance(advice, str) or not advice.strip():
         missing.append("operation_advice")
-    if not (result.analysis_summary or "").strip():
+    summary = result.analysis_summary
+    if not summary or not isinstance(summary, str) or not summary.strip():
         missing.append("analysis_summary")
-    dash = result.dashboard or {}
-    core = dash.get("core_conclusion") or {}
+    dash = result.dashboard if isinstance(result.dashboard, dict) else {}
+    core = dash.get("core_conclusion")
+    core = core if isinstance(core, dict) else {}
     if not (core.get("one_sentence") or "").strip():
         missing.append("dashboard.core_conclusion.one_sentence")
     intel = dash.get("intelligence")
+    intel = intel if isinstance(intel, dict) else None
     if intel is None or "risk_alerts" not in intel:
         missing.append("dashboard.intelligence.risk_alerts")
     if result.decision_type in ("buy", "hold"):
-        battle = dash.get("battle_plan") or {}
-        sp = battle.get("sniper_points") or {}
+        battle = dash.get("battle_plan")
+        battle = battle if isinstance(battle, dict) else {}
+        sp = battle.get("sniper_points")
+        sp = sp if isinstance(sp, dict) else {}
         stop_loss = sp.get("stop_loss")
         if stop_loss is None or (isinstance(stop_loss, str) and not stop_loss.strip()):
             missing.append("dashboard.battle_plan.sniper_points.stop_loss")
@@ -89,6 +103,146 @@ def apply_placeholder_fill(result: "AnalysisResult", missing_fields: List[str]) 
             if "sniper_points" not in result.dashboard["battle_plan"]:
                 result.dashboard["battle_plan"]["sniper_points"] = {}
             result.dashboard["battle_plan"]["sniper_points"]["stop_loss"] = "待补充"
+
+
+# ---------- chip_structure fallback (Issue #589) ----------
+
+_CHIP_KEYS: tuple = ("profit_ratio", "avg_cost", "concentration", "chip_health")
+
+
+def _is_value_placeholder(v: Any) -> bool:
+    """True if value is empty or placeholder (N/A, 数据缺失, etc.)."""
+    if v is None:
+        return True
+    if isinstance(v, (int, float)) and v == 0:
+        return True
+    s = str(v).strip().lower()
+    return s in ("", "n/a", "na", "数据缺失", "未知")
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    """Safely convert to float; return default on failure. Private helper for chip fill."""
+    if v is None:
+        return default
+    if isinstance(v, (int, float)):
+        try:
+            return default if math.isnan(float(v)) else float(v)
+        except (ValueError, TypeError):
+            return default
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _derive_chip_health(profit_ratio: float, concentration_90: float) -> str:
+    """Derive chip_health from profit_ratio and concentration_90."""
+    if profit_ratio >= 0.9:
+        return "警惕"  # 获利盘极高
+    if concentration_90 >= 0.25:
+        return "警惕"  # 筹码分散
+    if concentration_90 < 0.15 and 0.3 <= profit_ratio < 0.9:
+        return "健康"  # 集中且获利比例适中
+    return "一般"
+
+
+def _build_chip_structure_from_data(chip_data: Any) -> Dict[str, Any]:
+    """Build chip_structure dict from ChipDistribution or dict."""
+    if hasattr(chip_data, "profit_ratio"):
+        pr = _safe_float(chip_data.profit_ratio)
+        ac = chip_data.avg_cost
+        c90 = _safe_float(chip_data.concentration_90)
+    else:
+        d = chip_data if isinstance(chip_data, dict) else {}
+        pr = _safe_float(d.get("profit_ratio"))
+        ac = d.get("avg_cost")
+        c90 = _safe_float(d.get("concentration_90"))
+    chip_health = _derive_chip_health(pr, c90)
+    return {
+        "profit_ratio": f"{pr:.1%}",
+        "avg_cost": ac if (ac is not None and _safe_float(ac) != 0.0) else "N/A",
+        "concentration": f"{c90:.2%}",
+        "chip_health": chip_health,
+    }
+
+
+def fill_chip_structure_if_needed(result: "AnalysisResult", chip_data: Any) -> None:
+    """When chip_data exists, fill chip_structure placeholder fields from chip_data (in-place)."""
+    if not result or not chip_data:
+        return
+    try:
+        if not result.dashboard:
+            result.dashboard = {}
+        dash = result.dashboard
+        # Use `or {}` rather than setdefault so that an explicit `null` from LLM is also replaced
+        dp = dash.get("data_perspective") or {}
+        dash["data_perspective"] = dp
+        cs = dp.get("chip_structure") or {}
+        filled = _build_chip_structure_from_data(chip_data)
+        # Start from a copy of cs to preserve any extra keys the LLM may have added
+        merged = dict(cs)
+        for k in _CHIP_KEYS:
+            if _is_value_placeholder(merged.get(k)):
+                merged[k] = filled[k]
+        if merged != cs:
+            dp["chip_structure"] = merged
+            logger.info("[chip_structure] Filled placeholder chip fields from data source (Issue #589)")
+    except Exception as e:
+        logger.warning("[chip_structure] Fill failed, skipping: %s", e)
+
+
+_PRICE_POS_KEYS = ("ma5", "ma10", "ma20", "bias_ma5", "bias_status", "current_price", "support_level", "resistance_level")
+
+
+def fill_price_position_if_needed(
+    result: "AnalysisResult",
+    trend_result: Any = None,
+    realtime_quote: Any = None,
+) -> None:
+    """Fill missing price_position fields from trend_result / realtime data (in-place)."""
+    if not result:
+        return
+    try:
+        if not result.dashboard:
+            result.dashboard = {}
+        dash = result.dashboard
+        dp = dash.get("data_perspective") or {}
+        dash["data_perspective"] = dp
+        pp = dp.get("price_position") or {}
+
+        computed: Dict[str, Any] = {}
+        if trend_result:
+            tr = trend_result if isinstance(trend_result, dict) else (
+                trend_result.__dict__ if hasattr(trend_result, "__dict__") else {}
+            )
+            computed["ma5"] = tr.get("ma5")
+            computed["ma10"] = tr.get("ma10")
+            computed["ma20"] = tr.get("ma20")
+            computed["bias_ma5"] = tr.get("bias_ma5")
+            computed["current_price"] = tr.get("current_price")
+            support_levels = tr.get("support_levels") or []
+            resistance_levels = tr.get("resistance_levels") or []
+            if support_levels:
+                computed["support_level"] = support_levels[0]
+            if resistance_levels:
+                computed["resistance_level"] = resistance_levels[0]
+        if realtime_quote:
+            rq = realtime_quote if isinstance(realtime_quote, dict) else (
+                realtime_quote.to_dict() if hasattr(realtime_quote, "to_dict") else {}
+            )
+            if _is_value_placeholder(computed.get("current_price")):
+                computed["current_price"] = rq.get("price")
+
+        filled = False
+        for k in _PRICE_POS_KEYS:
+            if _is_value_placeholder(pp.get(k)) and not _is_value_placeholder(computed.get(k)):
+                pp[k] = computed[k]
+                filled = True
+        if filled:
+            dp["price_position"] = pp
+            logger.info("[price_position] Filled placeholder fields from computed data")
+    except Exception as e:
+        logger.warning("[price_position] Fill failed, skipping: %s", e)
 
 
 def get_stock_name_multi_source(
@@ -664,14 +818,17 @@ class GeminiAnalyzer:
                 if extra:
                     call_kwargs["extra_body"] = extra
 
-                if use_channel_router and self._router:
+                _router_model_names = set(get_configured_llm_models(config.llm_model_list))
+                if use_channel_router and self._router and model in _router_model_names:
                     # Channel / YAML path: Router manages key + base_url per model
                     response = self._router.completion(**call_kwargs)
-                elif self._router and model == config.litellm_model:
+                elif self._router and model == config.litellm_model and not use_channel_router:
                     # Legacy path: Router only for primary model multi-key
                     response = self._router.completion(**call_kwargs)
                 else:
-                    # Legacy path: direct call for fallback models
+                    # Legacy/direct-env path: direct call (also handles direct-env
+                    # providers like groq/ or bedrock/ that are not in the Router
+                    # model_list even when channel mode is active)
                     keys = get_api_keys_for_model(model, config)
                     if keys:
                         call_kwargs["api_key"] = keys[0]
@@ -804,7 +961,7 @@ class GeminiAnalyzer:
 
             # 设置生成配置
             generation_config = {
-                "temperature": config.gemini_temperature,
+                "temperature": config.llm_temperature,
                 "max_output_tokens": 8192,
             }
 
@@ -960,7 +1117,52 @@ class GeminiAnalyzer:
 | 流通市值 | {self._format_amount(rt.get('circ_mv'))} | |
 | 60日涨跌幅 | {rt.get('change_60d', 'N/A')}% | 中期表现 |
 """
-        
+
+        # 添加财报与分红（价值投资口径）
+        fundamental_context = context.get("fundamental_context") if isinstance(context, dict) else None
+        earnings_block = (
+            fundamental_context.get("earnings", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        earnings_data = (
+            earnings_block.get("data", {})
+            if isinstance(earnings_block, dict)
+            else {}
+        )
+        financial_report = (
+            earnings_data.get("financial_report", {})
+            if isinstance(earnings_data, dict)
+            else {}
+        )
+        dividend_metrics = (
+            earnings_data.get("dividend", {})
+            if isinstance(earnings_data, dict)
+            else {}
+        )
+        if isinstance(financial_report, dict) or isinstance(dividend_metrics, dict):
+            financial_report = financial_report if isinstance(financial_report, dict) else {}
+            dividend_metrics = dividend_metrics if isinstance(dividend_metrics, dict) else {}
+            ttm_yield = dividend_metrics.get("ttm_dividend_yield_pct", "N/A")
+            ttm_cash = dividend_metrics.get("ttm_cash_dividend_per_share", "N/A")
+            ttm_count = dividend_metrics.get("ttm_event_count", "N/A")
+            report_date = financial_report.get("report_date", "N/A")
+            prompt += f"""
+### 财报与分红（价值投资口径）
+| 指标 | 数值 | 说明 |
+|------|------|------|
+| 最近报告期 | {report_date} | 来自结构化财报字段 |
+| 营业收入 | {financial_report.get('revenue', 'N/A')} | |
+| 归母净利润 | {financial_report.get('net_profit_parent', 'N/A')} | |
+| 经营现金流 | {financial_report.get('operating_cash_flow', 'N/A')} | |
+| ROE | {financial_report.get('roe', 'N/A')} | |
+| 近12个月每股现金分红 | {ttm_cash} | 仅现金分红、税前口径 |
+| TTM 股息率 | {ttm_yield} | 公式：近12个月每股现金分红 / 当前价格 × 100% |
+| TTM 分红事件数 | {ttm_count} | |
+
+> 若上述字段为 N/A 或缺失，请明确写“数据缺失，无法判断”，禁止编造。
+"""
+
         # 添加筹码分布数据
         if 'chip' in context:
             chip = context['chip']
@@ -1011,6 +1213,22 @@ class GeminiAnalyzer:
 """
         
         # 添加新闻搜索结果（重点区域）
+        news_window_days: Optional[int] = None
+        context_window = context.get("news_window_days")
+        try:
+            if context_window is not None:
+                parsed_window = int(context_window)
+                if parsed_window > 0:
+                    news_window_days = parsed_window
+        except (TypeError, ValueError):
+            news_window_days = None
+
+        if news_window_days is None:
+            prompt_config = get_config()
+            news_window_days = resolve_news_window_days(
+                news_max_age_days=getattr(prompt_config, "news_max_age_days", 3),
+                news_strategy_profile=getattr(prompt_config, "news_strategy_profile", "short"),
+            )
         prompt += """
 ---
 
@@ -1018,10 +1236,14 @@ class GeminiAnalyzer:
 """
         if news_context:
             prompt += f"""
-以下是 **{stock_name}({code})** 近7日的新闻搜索结果，请重点提取：
+以下是 **{stock_name}({code})** 近{news_window_days}日的新闻搜索结果，请重点提取：
 1. 🚨 **风险警报**：减持、处罚、利空
 2. 🎯 **利好催化**：业绩、合同、政策
 3. 📊 **业绩预期**：年报预告、业绩快报
+4. 🕒 **时间规则（强制）**：
+   - 输出到 `risk_alerts` / `positive_catalysts` / `latest_news` 的每一条都必须带具体日期（YYYY-MM-DD）
+   - 超出近{news_window_days}日窗口的新闻一律忽略
+   - 时间未知、无法确定发布日期的新闻一律忽略
 
 ```
 {news_context}
@@ -1076,6 +1298,7 @@ class GeminiAnalyzer:
 - **持仓分类建议**：空仓者怎么做 vs 持仓者怎么做
 - **具体狙击点位**：买入价、止损价、目标价（精确到分）
 - **检查清单**：每项用 ✅/⚠️/❌ 标记
+- **消息面时间合规**：`latest_news`、`risk_alerts`、`positive_catalysts` 不得包含超出近{news_window_days}日或时间未知的信息
 
 请输出完整的 JSON 格式决策仪表盘。"""
         

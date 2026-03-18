@@ -1,197 +1,153 @@
 # LLM Configuration Guide
 
-This document explains the LLM configuration for the AI Stock Analysis System, including the three-tier config priority, quick start, channel mode, Vision model, Agent mode, and config validation troubleshooting.
+Welcome! Whether you are a beginner newly exposed to AI or a veteran skilled with various APIs, this guide will help you set up Large Language Models (LLMs) quickly.
 
-> For quick start, see [README](../README.md). This document is for advanced configuration.
-
-## Table of Contents
-
-- [1. Quick Start (5 minutes)](#1-quick-start-5-minutes)
-- [2. Three-Tier Config Priority](#2-three-tier-config-priority)
-- [3. Advanced Configuration](#3-advanced-configuration)
-- [4. Extended Features](#4-extended-features)
-- [5. Migration and Compatibility](#5-migration-and-compatibility)
+Our LLM integration is powered by the robust and universal [LiteLLM](https://docs.litellm.ai/), which means we support almost all mainstream models on the market (both official APIs and third-party relay services). To cater to users at different experience levels, we have designed a "three-tier priority" configuration. Simply choose the method that suits you best.
 
 ---
 
-## 1. Quick Start (5 minutes)
+## Quick Navigation: Which section should you read?
 
-### 1.1 Minimum Configuration
-
-Choose one to run AI analysis:
-
-| Option | Environment Variable | Description |
-|--------|----------------------|-------------|
-| Gemini | `GEMINI_API_KEY=xxx` | [Google AI Studio](https://aistudio.google.com/) free tier, VPN may be required |
-| DeepSeek | `DEEPSEEK_API_KEY=xxx` | [DeepSeek Platform](https://platform.deepseek.com) |
-| AIHubmix | `AIHUBMIX_KEY=xxx` | [AIHubmix](https://aihubmix.com/?aff=CfMq) aggregator, one key for multiple models, no VPN |
-
-Multi-key load balancing: `GEMINI_API_KEYS=key1,key2,key3`, `DEEPSEEK_API_KEYS=key1,key2`, etc.
-
-### 1.2 Verification
-
-- **Config check**: `python test_env.py --config` — validates config structure only, no API call
-- **Full LLM test**: `python test_env.py --llm` — actually calls the API (requires network, consumes quota)
-
-### 1.3 Scenario Selection
-
-- **Single model** → Scenario A: fill the corresponding API Key
-- **Multiple models / platforms / isolated base_url** → Scenario B: use channel mode or YAML mode
-
-### 1.4 Other Entry Points
-
-- **CLI wizard**: `python -m dsa init` — single-model quick config, 9 provider presets
-- **Web Settings**: Settings → AI Model → Channel Editor — visual multi-channel config
+1. **[Beginners]** "I just want to get the system running ASAP, keep it as simple as possible!" -> [Go to Method 1: Simple Model Config](#method-1-simple-model-config-for-beginners)
+2. **[Advanced Users]** "I have several Keys, want to configure fallback models, and define custom Base URLs." -> [Go to Method 2: Channels Mode Config](#method-2-channels-mode-config-advancedmulti-model)
+3. **[Veterans]** "I want complex load balancing, request routing, and enterprise-level high availability!" -> [Go to Method 3: Advanced YAML Config](#method-3-advanced-yaml-config-expert-setup)
+4. **[Vision Models]** "I want to extract stock codes from images!" -> [Go to Vision Model Config](#advanced-feature-vision-model-config)
 
 ---
 
-## 2. Three-Tier Config Priority
+## Method 1: Simple Model Config (For Beginners)
 
-### 2.1 Priority
+**Goal:** Just paste your API Key and the model name to start using it immediately. No need to mess with complex concepts.
 
-```
-LITELLM_CONFIG (YAML)  >  LLM_CHANNELS (env)  >  legacy keys
+If you only plan to use one single model, this is the fastest way. Open the `.env` file in the project's root directory (if it doesn't exist, copy `.env.example` and rename it to `.env`).
+
+### Example 1: Using a Third-party OpenAI-Compatible Platform (Highly Recommended)
+
+Most third-party relay platforms and local API providers support the OpenAI interface format. As long as the platform provides an API Key and a Base URL, you can configure it easily using the following pattern:
+
+```env
+# Fill in the API Key provided by your platform
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+# Fill in the platform's API Base URL (Very Important: Usually must end with /v1)
+OPENAI_BASE_URL=https://api.siliconflow.cn/v1
+# Fill in the specific model name (Very Important: You must add the "openai/" prefix so the system recognizes it)
+LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3 
 ```
 
-Once a higher priority is active, lower priorities are **fully ignored**.
-
-### 2.2 Mode Comparison
-
-| Mode | Use Case | Configuration |
-|------|----------|---------------|
-| YAML | Complex routing, multi-deployment, standard LiteLLM format | `LITELLM_CONFIG=./litellm_config.yaml` |
-| Channels | Multiple models, per-channel base_url/api_key | `LLM_CHANNELS=aihubmix,deepseek,gemini` + `LLM_{NAME}_*` |
-| Legacy | Single model, simplest | `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `AIHUBMIX_KEY` etc. |
-
-### 2.3 "Do Not Mix" Explanation
-
-Once channels or YAML are configured, the legacy section (`GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.) is **not used**. Conversely, only legacy config means channels and YAML are inactive. The system uses exactly one mode by priority.
-
-### 2.4 Provider Prefix
-
-`LITELLM_MODEL` must be in `provider/model` format, e.g.:
-
-- `gemini/gemini-2.5-flash`
-- `openai/gpt-4o-mini`
-- `anthropic/claude-3-5-sonnet-20241022`
-- `deepseek/deepseek-chat`
-
-Legacy format `GEMINI_MODEL` (no prefix) is only used when `LITELLM_MODEL` is not set.
-
----
-
-## 3. Advanced Configuration
-
-### 3.1 Channel Mode (LLM_CHANNELS)
-
-Environment variable format:
-
+### Example 2: Using the Official DeepSeek API
+```env
+# Fill in the API Key requested from the official DeepSeek platform
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-LLM_CHANNELS=aihubmix,deepseek,gemini
+*Note: Only this single line is needed. The system will automatically detect and default to the DeepSeek model.*
 
-LLM_{NAME}_BASE_URL=...      # Optional, native providers like Gemini omit
-LLM_{NAME}_API_KEY=...      # Or LLM_{NAME}_API_KEYS=key1,key2
-LLM_{NAME}_MODELS=...       # Comma-separated
+### Example 3: Using the Free Gemini API
+```env
+# Fill in your Google Gemini Key
+GEMINI_API_KEY=AIzac...
 ```
 
-**Model name format**:
-
-- With `base_url`: models without prefix (e.g. `gpt-4o-mini`) are auto-prefixed with `openai/`
-- Native providers like Gemini (no base_url): must use full format, e.g. `gemini/gemini-2.5-flash`
-
-Full example: [.env.example](../.env.example) lines 87–102.
-
-### 3.2 YAML Mode (LITELLM_CONFIG)
-
-For complex routing, multi-deployment, standard LiteLLM format. See [litellm_config.example.yaml](../litellm_config.example.yaml).
-
-API key reference: `api_key: "os.environ/ENV_VAR_NAME"` — read from env, avoid plaintext in file.
-
-### 3.3 9 Presets
-
-| Preset Key | Display Name | Base URL | Typical Models (see LLMChannelEditor placeholder) | Get Key |
-|------------|---------------|----------|--------------------------------------------------|---------|
-| aihubmix | AIHubmix | https://aihubmix.com/v1 | gpt-4o-mini, claude-3-5-sonnet, qwen-plus | [aihubmix.com](https://aihubmix.com/?aff=CfMq) |
-| deepseek | DeepSeek | https://api.deepseek.com/v1 | deepseek-chat, deepseek-reasoner | [platform.deepseek.com](https://platform.deepseek.com) |
-| dashscope | Qwen (Alibaba) | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus, qwen-turbo | [dashscope.aliyun.com](https://dashscope.aliyun.com) |
-| zhipu | Zhipu GLM | https://open.bigmodel.cn/api/paas/v4 | glm-4-flash, glm-4-plus | [open.bigmodel.cn](https://open.bigmodel.cn) |
-| moonshot | Moonshot | https://api.moonshot.cn/v1 | moonshot-v1-8k | [platform.moonshot.cn](https://platform.moonshot.cn) |
-| siliconflow | SiliconFlow | https://api.siliconflow.cn/v1 | deepseek-ai/DeepSeek-V3 | [siliconflow.cn](https://siliconflow.cn) |
-| openrouter | OpenRouter | https://openrouter.ai/api/v1 | gpt-4o, claude-3.5-sonnet | [openrouter.ai](https://openrouter.ai) |
-| gemini | Gemini | (empty, native) | gemini/gemini-2.5-flash | [aistudio.google.com](https://aistudio.google.com) |
-| custom | Custom | User-defined | User-defined | - |
+> **Congratulations! If you're a beginner, you can stop reading here and run the program!**
+> Want to test the connection? Open your terminal in the root directory and run: `python test_env.py --llm`
 
 ---
 
-## 4. Extended Features
+## Method 2: Channels Mode Config (Advanced/Multi-model)
 
-### 4.1 Vision Model (Image Stock Code Extraction)
+**Goal:** I have Keys from multiple different platforms and want to use them together. If my primary model fails or the network drops, I want it to automatically switch to fallback models.
 
-Image-to-stock-code extraction (e.g. "Add from image") uses LiteLLM Vision.
+**Configure via Web UI directly:** After starting the application, you can do this visually under **System Settings -> AI Models -> Channel Editor** in the Web UI!
 
-- **`VISION_MODEL`**: Image model, e.g. `gemini/gemini-2.0-flash`, `openai/gpt-4o`
-- **`VISION_PROVIDER_PRIORITY`**: Default `gemini,anthropic,openai`, fallback order when primary fails
-- **Primary model not Vision**: If primary is DeepSeek etc., set `VISION_MODEL` explicitly for image extraction
-- **Validation**: If `VISION_MODEL` is set but no provider API key, `validate_structured` outputs warning
+If you prefer modifying files, configuring this in the `.env` file is also very smooth. It allows you to manage multiple platforms simultaneously. The rules are:
 
-### 4.2 LLM in Agent Mode
+1. **Declare your channels first**: `LLM_CHANNELS=channel_name_1,channel_name_2`
+2. **Provide configurations for each channel** (Note the uppercase): `LLM_{CHANNEL_NAME}_XXX`
 
-In Agent strategy chat (`AGENT_MODE=true`):
+### Example: Configuring DeepSeek and a Third-party Relay with Fallbacks
+```env
+# 1. Enable channel mode, declare two channels here: deepseek and aihubmix
+LLM_CHANNELS=deepseek,aihubmix
 
-- **Reasoning models**: deepseek-reasoner, Gemini 3 etc. need `thought_signature` passthrough; handled by LiteLLM
-- **`LITELLM_MODEL`**: Must include provider prefix
-- **Multi-key + fallback**: Primary rotates keys; on full failure, uses `LITELLM_FALLBACK_MODELS`; see [Full Guide - LiteLLM Direct Integration](full-guide_EN.md#litellm-direct-integration-multi-model-multi-key-load-balancing)
+# 2. Channel 1: Configure Official DeepSeek
+LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+LLM_DEEPSEEK_API_KEY=sk-1111111111111
+LLM_DEEPSEEK_MODELS=deepseek-chat,deepseek-reasoner
 
-### 4.3 Web Channel Editor
+# 3. Channel 2: Configure a common relay/proxy API
+LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
+LLM_AIHUBMIX_API_KEY=sk-2222222222222
+LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
 
-- **Path**: Settings → AI Model → Channel Editor
-- **Features**: Add/edit/delete channels; preset dropdown; saves to `LLM_*` env vars
-- Equivalent to manual `.env` config; use either
+# 4. [Key Step] Specify the primary model and fallback list
+# Set your primary model:
+LITELLM_MODEL=deepseek/deepseek-chat
+# If the primary model crashes, try these fallbacks sequentially:
+LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,anthropic/claude-3-5-sonnet
+```
 
-### 4.4 Config Validation and Troubleshooting
-
-**`python test_env.py --config` output**:
-
-| Symbol | severity | Meaning |
-|--------|----------|---------|
-| ✗ | error | Must fix, feature unavailable |
-| ⚠ | warning | Recommended fix, some features limited |
-| · | info | Informational, can ignore |
-
-**Common issues and fixes**:
-
-| Message | Fix |
-|---------|-----|
-| No LLM configured | Configure `LITELLM_CONFIG` / `LLM_CHANNELS` or at least one `*_API_KEY` |
-| LITELLM_MODEL not configured | Recommended: set format like `gemini/gemini-2.5-flash` |
-| VISION_MODEL set but no Vision API key | Configure provider API key (Gemini/Anthropic/OpenAI) |
-| No notification channel | Configure at least one push channel |
-| OPENAI_VISION_MODEL deprecated | Use `VISION_MODEL` instead |
-
-**Common runtime errors**:
-
-| Error | Possible cause | Suggestion |
-|-------|----------------|------------|
-| 400 | Model/proxy compatibility, thought_signature | Check model format, proxy config |
-| 429 | API rate limit | Configure multi-key load balancing |
-| timeout | Network or service delay | Check proxy, retry |
-| invalid API key | Wrong or expired key | Regenerate key |
+> **Critical Warning**: If you enable `LLM_CHANNELS`, any standard `DEEPSEEK_API_KEY` or `OPENAI_API_KEY` declared independently will be **completely ignored**. **Use only one mode** to prevent configuration conflicts.
 
 ---
 
-## 5. Migration and Compatibility
+## Method 3: Advanced YAML Config (Expert Setup)
 
-### From Legacy to Channels
+**Goal:** I want maximum control and origin-level routing rules for enterprise-grade high availability.
 
-1. Identify providers to migrate (e.g. Gemini, DeepSeek)
-2. Set `LLM_CHANNELS=gemini` (or corresponding name)
-3. Configure `LLM_GEMINI_API_KEY`, `LLM_GEMINI_MODELS`, etc.
-4. Remove or comment out original `GEMINI_API_KEY` (legacy ignored when channels active)
+This project completely unlocks LiteLLM's native capabilities, supporting high concurrency, automatic retries, and TPM/RPM based load balancing.
 
-### From Channels to YAML
+1. Keep only one declaration line in your `.env`:
+   ```env
+   LITELLM_CONFIG=./litellm_config.yaml
+   ```
+2. Create a `litellm_config.yaml` in the project root directory (you can refer to `litellm_config.example.yaml`).
 
-For finer-grained routing, multi-deployment, standard LiteLLM config. See [litellm_config.example.yaml](../litellm_config.example.yaml); convert channel config to `model_list` format and set `LITELLM_CONFIG=./litellm_config.yaml`.
+Example `litellm_config.yaml`:
+```yaml
+model_list:
+  - model_name: my-smart-model
+    litellm_params:
+      model: openai/deepseek-chat
+      api_base: https://api.deepseek.com/v1
+      api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # Fetch from environment vars for security
+```
 
-### Backward Compatibility
+> **Priority Rule**: YAML is king! If YAML is configured, both **Channels Mode** and **Simple Mode** are entirely ignored. Hierarchy: `YAML > Channels > Simple`.
 
-Existing single-key config (`GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `AIHUBMIX_KEY`, etc.) **requires no changes**. `GEMINI_MODEL`, `OPENAI_MODEL` and other legacy fields are still valid; gradual migration to `LITELLM_MODEL` is recommended.
+---
+
+## Advanced Feature: Vision Model Config
+
+Certain specific features in our system (like uploading a stock chart screenshot to extract the stock code) require models capable of computer vision. You need to assign a dedicated vision model in your `.env`.
+
+```env
+# Specify your dedicated vision model name
+VISION_MODEL=gemini/gemini-2.5-flash
+# Make sure to provide its corresponding provider API KEY (e.g., GEMINI_API_KEY):
+# GEMINI_API_KEY=xxx
+```
+
+**Vision Fallback Mechanism:** To prevent unexpected failures, the system has a built-in fallback strategy. If the primary vision model fails, it will attempt to use alternative vision-capable provider keys in the following order:
+```env
+# Default fallback sequence:
+VISION_PROVIDER_PRIORITY=gemini,anthropic,openai
+```
+
+---
+
+## Troubleshooting
+
+Afraid you got the config wrong? Type the following commands in your terminal to diagnose:
+
+- `python test_env.py --config`: Only verifies if the logic in your `.env` is structurally correct. (Provides instant results, no network calls, strictly checks for syntax omissions).
+- `python test_env.py --llm`: Sends a real greeting to the LLM to test the actual endpoint. This thoroughly verifies if your **network is working** and if your **account has sufficient balance**.
+
+### Common Pitfalls
+
+| Weird Error You Got? | Likely Culprit | How to Fix It? |
+|----------------------|----------------|----------------|
+| **"LLM_MODEL is not configured" pops up** | The system doesn't know which brand's model you want to use. | Add a clear instruction in `.env`: `LITELLM_MODEL=provider/your_model_name`. Example: `openai/gpt-4o-mini`. |
+| **I added multiple provider Keys, why is only one working?** | You mixed the **Simple Mode** and **Channels Mode**! | Choose one path. For simple setups, delete anything starting with `LLM_CHANNELS`. To use multi-model fallbacks, migrate all your Keys into the `LLM_CHANNELS` setup. |
+| **Returns 400, 401, or Invalid API Key** | The API Key is wrong, copied incompletely, account lacks credits, or you mistyped the model name (extremely common). | 1. Ensure there are no spaces at the start/end of your Key.<br> 2. Ensure your Base URL ends with `/v1`.<br> 3. Check if you forgot the `openai/` prefix on the model name! |
+| **Spins endlessly, eventually hits Timeout/ConnectionRefused** | You are using restricted APIs (like Google/OpenAI) in a blocked region without a proxy, or your cloud server lacks external internet access. | Highly recommend using **official regional APIs** (like DeepSeek) or **OpenAI-compatible relay platforms**. Third-party platforms bypass these network constraints. |
+
+*Veteran's Tip: If you enable **Agent Mode (Deep-thinking & web-search)**, experience shows you should use an advanced reasoning model like `deepseek-reasoner`. Trying to save money by using weak mini-models for agents will likely result in infinite loops or missed objectives.*

@@ -1,197 +1,171 @@
-# LLM 配置指南
+# LLM (大模型) 配置指南
 
-本文档系统讲解 A股智能分析系统的 LLM 配置方式，包括三层配置优先级、快速上手、渠道模式、Vision 模型、Agent 模式及配置校验排错。
+欢迎！无论你是刚接触 AI 的新手小白，还是精通各种 API 的高玩老手，这份指南都能帮你快速把大模型（LLM）跑起来。
 
-> 快速上手请参考 [README](../README.md)，本文档为进阶配置。
-
-## 目录
-
-- [1. 快速上手（5 分钟）](#1-快速上手5-分钟)
-- [2. 三层配置优先级](#2-三层配置优先级)
-- [3. 进阶配置](#3-进阶配置)
-- [4. 扩展功能](#4-扩展功能)
-- [5. 迁移与兼容](#5-迁移与兼容)
+本项目的大模型接入基于强大且通用的 [LiteLLM](https://docs.litellm.ai/)，这意味着几乎市面上所有的主流大模型（官方API或中转接口）我们都支持。为了照顾不同阶段的用户，我们设计了“三层优先级”配置，按需选择最适合你的方式即可。
 
 ---
 
-## 1. 快速上手（5 分钟）
+## 快速导航：你应该看哪一节？
 
-### 1.1 最小配置
-
-任选其一即可运行 AI 分析：
-
-| 选项 | 环境变量 | 说明 |
-|------|----------|------|
-| Gemini | `GEMINI_API_KEY=xxx` | [Google AI Studio](https://aistudio.google.com/) 免费额度，需科学上网 |
-| DeepSeek | `DEEPSEEK_API_KEY=xxx` | [DeepSeek 平台](https://platform.deepseek.com) |
-| AIHubmix | `AIHUBMIX_KEY=xxx` | [AIHubmix](https://aihubmix.com/?aff=CfMq) 聚合，一 Key 多模型，无需科学上网 |
-
-多 Key 负载均衡：`GEMINI_API_KEYS=key1,key2,key3`、`DEEPSEEK_API_KEYS=key1,key2` 等。
-
-### 1.2 验证
-
-- **配置校验**：`python test_env.py --config` — 仅检查配置结构，不调用 API
-- **完整 LLM 测试**：`python test_env.py --llm` — 实际调用 API（需网络、消耗额度）
-
-### 1.3 场景选择
-
-- **单模型** → 场景 A：填对应 API Key 即可
-- **多模型 / 多平台 / 需隔离 base_url** → 场景 B：使用渠道模式或 YAML 模式
-
-### 1.4 其他入口
-
-- **CLI 交互式引导**：`python -m dsa init` — 单模型快速配置，9 个 provider 预设
-- **Web 设置页**：系统设置 → AI 模型 → 渠道编辑器 — 可视化配置多渠道
+1. **【新手小白】** "我只想赶紧把系统跑起来，越简单越好！" -> [指路【方式一：极简单模型配置】](#方式一极简单模型配置适合新手)
+2. **【进阶用户】** "我有好几个 Key，想配置备用模型，还要改自定义网址(Base URL)。" -> [指路【方式二：渠道(Channels)模式配置】](#方式二渠道channels模式配置适合进阶多模型)
+3. **【高玩老手】** "我要做复杂的负载均衡、请求路由、甚至多异构平台高可用！" -> [指路【方式三：YAML 高级配置】](#方式三yaml高级配置适合老手自定义)
+4. **【视觉模型】** "我想用图片识别股票代码！" -> [指路【扩展功能：看图模型(Vision)配置】](#扩展功能看图模型vision配置)
 
 ---
 
-## 2. 三层配置优先级
+## 方式一：极简单模型配置（适合新手）
 
-### 2.1 优先级
+**目标：** 只要记得填入 API Key 和对应的模型名就能立刻用。不需要折腾复杂概念。
 
-```
-LITELLM_CONFIG (YAML)  >  LLM_CHANNELS (env)  >  legacy keys
+如果你只打算用一种模型，这是最快捷的办法。打开项目根目录下的 `.env` 文件（如果没有，复制一份 `.env.example` 并重命名为 `.env`）。
+
+### 示例 1：使用通用第三方平台（兼容 OpenAI 格式，推荐）
+
+现在市面上绝大多数第三方聚合平台（例如硅基流动、AIHubmix、阿里百炼、智谱等）都兼容 OpenAI 的接口格式。只要平台提供了 API Key 和 Base URL，你都可以按照以下格式无脑配置：
+
+```env
+# 填入平台提供给你的 API Key
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxx
+# 填入平台的接口地址 (非常重要：结尾通常必须带有 /v1)
+OPENAI_BASE_URL=https://api.siliconflow.cn/v1
+# 填入该平台上具体的模型名称（非常重要：注意前面必须加上 openai/ 前缀帮系统识别）
+LITELLM_MODEL=openai/deepseek-ai/DeepSeek-V3 
 ```
 
-高优先级一旦生效，低优先级**全部忽略**。
-
-### 2.2 模式对比
-
-| 模式 | 适用场景 | 配置方式 |
-|------|----------|----------|
-| YAML | 复杂路由、多 deployment、标准 LiteLLM 格式 | `LITELLM_CONFIG=./litellm_config.yaml` |
-| 渠道 | 多模型共存、每渠道独立 base_url/api_key | `LLM_CHANNELS=aihubmix,deepseek,gemini` + `LLM_{NAME}_*` |
-| Legacy | 单模型、最简单 | `GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `AIHUBMIX_KEY` 等 |
-
-### 2.3 「不要混用」说明
-
-一旦配置了渠道或 YAML，legacy 区域（`GEMINI_API_KEY`、`OPENAI_API_KEY` 等）**不参与**解析。反之，仅配置 legacy 时，渠道和 YAML 不生效。系统按优先级只取一种。
-
-### 2.4 provider 前缀
-
-`LITELLM_MODEL` 必须为 `provider/model` 格式，例如：
-
-- `gemini/gemini-2.5-flash`
-- `openai/gpt-4o-mini`
-- `anthropic/claude-3-5-sonnet-20241022`
-- `deepseek/deepseek-chat`
-
-旧格式 `GEMINI_MODEL`（无前缀）仅用于未配置 `LITELLM_MODEL` 时的自动推断。
-
----
-
-## 3. 进阶配置
-
-### 3.1 渠道模式（LLM_CHANNELS）
-
-环境变量格式：
-
+### 示例 2：使用 DeepSeek 官方接口
+```env
+# 填入你在 DeepSeek 官方平台申请的 API Key
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 ```
-LLM_CHANNELS=aihubmix,deepseek,gemini
+*提示：仅需这一行，系统会自动识别并默认使用 DeepSeek 模型。*
 
-LLM_{NAME}_BASE_URL=...      # 可选，Gemini 等原生 provider 无需
-LLM_{NAME}_API_KEY=...       # 或 LLM_{NAME}_API_KEYS=key1,key2
-LLM_{NAME}_MODELS=...        # 逗号分隔
+### 示例 3：使用 Gemini 免费 API
+```env
+# 填入你获取的 Google Gemini Key
+GEMINI_API_KEY=AIzac...
 ```
 
-**模型名格式**：
-
-- 有 `base_url` 时：无前缀模型（如 `gpt-4o-mini`）自动加 `openai/` 前缀
-- Gemini 等原生 provider（无 base_url）：必须写完整格式，如 `gemini/gemini-2.5-flash`
-
-完整示例见 [.env.example](../.env.example) 第 87–102 行。
-
-### 3.2 YAML 模式（LITELLM_CONFIG）
-
-适用于复杂路由、多 deployment、标准 LiteLLM 格式。参考 [litellm_config.example.yaml](../litellm_config.example.yaml)。
-
-密钥引用格式：`api_key: "os.environ/ENV_VAR_NAME"` — 从环境变量读取，避免明文写入文件。
-
-### 3.3 9 个预设
-
-| 预设 Key | 显示名 | Base URL | 典型模型（参考 LLMChannelEditor 占位符） | 获取 Key 链接 |
-|----------|--------|----------|------------------------------------------|---------------|
-| aihubmix | AIHubmix | https://aihubmix.com/v1 | gpt-4o-mini, claude-3-5-sonnet, qwen-plus | [aihubmix.com](https://aihubmix.com/?aff=CfMq) |
-| deepseek | DeepSeek | https://api.deepseek.com/v1 | deepseek-chat, deepseek-reasoner | [platform.deepseek.com](https://platform.deepseek.com) |
-| dashscope | 通义千问 | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus, qwen-turbo | [dashscope.aliyun.com](https://dashscope.aliyun.com) |
-| zhipu | 智谱 GLM | https://open.bigmodel.cn/api/paas/v4 | glm-4-flash, glm-4-plus | [open.bigmodel.cn](https://open.bigmodel.cn) |
-| moonshot | Moonshot | https://api.moonshot.cn/v1 | moonshot-v1-8k | [platform.moonshot.cn](https://platform.moonshot.cn) |
-| siliconflow | SiliconFlow | https://api.siliconflow.cn/v1 | deepseek-ai/DeepSeek-V3 | [siliconflow.cn](https://siliconflow.cn) |
-| openrouter | OpenRouter | https://openrouter.ai/api/v1 | gpt-4o, claude-3.5-sonnet | [openrouter.ai](https://openrouter.ai) |
-| gemini | Gemini | （空，原生） | gemini/gemini-2.5-flash | [aistudio.google.com](https://aistudio.google.com) |
-| custom | 自定义 | 用户填写 | 用户填写 | - |
+> **恭喜！小白读到这里就可以去运行程序了！**
+> 想测测看通没通？在主目录打开命令行输入：`python test_env.py --llm`
 
 ---
 
-## 4. 扩展功能
+## 方式二：渠道(Channels)模式配置（适合进阶/多模型）
 
-### 4.1 Vision 模型（图片识别股票代码）
+**目标：** 我有多个不同平台的 Key 想要混着用，如果主模型卡了/网络挂了，我希望它能自动切换到备用模型。
 
-从图片提取股票代码（如「从图片添加」功能）使用 LiteLLM Vision。
+**网页端可以直接配：** 你可以启动程序后，在 **Web UI 的“系统设置 -> AI 模型 -> 渠道编辑器”** 中非常直观地进行可视化配置！
 
-- **`VISION_MODEL`**：图片识别专用模型，如 `gemini/gemini-2.0-flash`、`openai/gpt-4o`
-- **`VISION_PROVIDER_PRIORITY`**：默认 `gemini,anthropic,openai`，主模型失败时按此顺序回退
-- **主模型非 Vision 时**：若主模型为 DeepSeek 等非 Vision 模型，可显式配置 `VISION_MODEL` 供图片提取使用
-- **校验**：若配置了 `VISION_MODEL` 但未配置对应 provider 的 API Key，`validate_structured` 输出 warning
+如果不方便用网页版，在 `.env` 文件中配置也非常丝滑，它能让你同时管理多个第三方平台。规则如下：
 
-### 4.2 Agent 模式下的 LLM
+1. **先声明你有几个渠道**：`LLM_CHANNELS=渠道名称1,渠道名称2`
+2. **给每个渠道分别填写配置**（注意全大写）：`LLM_{渠道名}_XXX`
 
-Agent 策略问股模式（`AGENT_MODE=true`）下：
+### 示例：同时配置 DeepSeek 和某中转平台，并设置备用切换
+```env
+# 1. 开启渠道模式，声明这里有两个渠道：deepseek 和 aihubmix
+LLM_CHANNELS=deepseek,aihubmix
 
-- **Reasoning 模型**：deepseek-reasoner、Gemini 3 等需 `thought_signature` 透传，系统已通过 LiteLLM 自动处理
-- **`LITELLM_MODEL`**：必须带 provider 前缀
-- **多 Key + 跨模型降级**：主模型多 Key 轮换，全部失败时按 `LITELLM_FALLBACK_MODELS` 切换，详见 [完整指南 - LiteLLM 直接集成](full-guide.md#litellm-直接集成多模型--多-key-负载均衡)
+# 2. 渠道一：配置 DeepSeek 官方
+LLM_DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+LLM_DEEPSEEK_API_KEY=sk-1111111111111
+LLM_DEEPSEEK_MODELS=deepseek-chat,deepseek-reasoner
 
-### 4.3 Web 设置页渠道编辑器
+# 3. 渠道二：配置一个常用的聚合中转 API
+LLM_AIHUBMIX_BASE_URL=https://api.aihubmix.com/v1
+LLM_AIHUBMIX_API_KEY=sk-2222222222222
+LLM_AIHUBMIX_MODELS=gpt-4o-mini,claude-3-5-sonnet
 
-- **路径**：系统设置 → AI 模型 → 渠道编辑器
-- **功能**：添加/编辑/删除渠道；预设下拉选择；保存后写入 `LLM_*` 环境变量
-- 与 `.env` 手动配置等效，二选一即可
+# 4. 【关键】指定主模型和备用模型列表
+# 平时首选用 deepseek 这款模型：
+LITELLM_MODEL=deepseek/deepseek-chat
+# 主模型崩了立刻挨个尝试下面这俩备用模型：
+LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini,anthropic/claude-3-5-sonnet
+```
 
-### 4.4 配置校验与排错
-
-**`python test_env.py --config` 输出解读**：
-
-| 符号 | severity | 含义 |
-|------|----------|------|
-| ✗ | error | 必须修复，否则功能不可用 |
-| ⚠ | warning | 建议修复，部分功能受限 |
-| · | info | 提示信息，可忽略 |
-
-**常见 issue 与修复**：
-
-| 提示 | 修复 |
-|------|------|
-| 未配置任何 LLM | 配置 `LITELLM_CONFIG` / `LLM_CHANNELS` 或至少一个 `*_API_KEY` |
-| LITELLM_MODEL 未配置 | 建议配置，格式如 `gemini/gemini-2.5-flash` |
-| VISION_MODEL 已配置但未找到可用 Vision API Key | 配置对应 provider 的 API Key（Gemini/Anthropic/OpenAI） |
-| 未配置通知渠道 | 配置至少一个推送渠道 |
-| OPENAI_VISION_MODEL 已废弃 | 改用 `VISION_MODEL` |
-
-**常见运行时错误**：
-
-| 错误 | 可能原因 | 建议 |
-|------|----------|------|
-| 400 | 模型/代理兼容、thought_signature 等 | 检查模型名格式、代理配置 |
-| 429 | API 限流 | 配置多 Key 负载均衡 |
-| timeout | 网络或服务延迟 | 检查代理、重试 |
-| invalid API key | Key 错误或过期 | 重新获取 Key |
+> **致命避坑说明**：如果你启用了 `LLM_CHANNELS`，那么你直接写在外面的 `DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 将**全部失效（系统一律无视）**！二者**选其一即可**，千万不要既写了新手模式又写了渠道模式结果产生冲突。
 
 ---
 
-## 5. 迁移与兼容
+## 方式三：YAML 高级配置（适合老手自定义）
 
-### 从 legacy 迁移到渠道
+**目标：** 我不在乎学习门槛，我要最高控制权，我要用原生规则做企业级高可用！
 
-1. 确定要迁移的 provider（如 Gemini、DeepSeek）
-2. 设置 `LLM_CHANNELS=gemini`（或对应名称）
-3. 配置 `LLM_GEMINI_API_KEY`、`LLM_GEMINI_MODELS` 等
-4. 移除或注释原 `GEMINI_API_KEY`（渠道生效后 legacy 被忽略）
+本项目完全放开了 LiteLLM 原生能力，支持高并发、自动重试、按 RPM/TPM 负载均衡等操作。
 
-### 从渠道迁移到 YAML
+### 本地运行 / Docker 部署模式配置说明
 
-适用于需要更细粒度路由、多 deployment、标准 LiteLLM 配置的场景。参考 [litellm_config.example.yaml](../litellm_config.example.yaml)，将渠道配置改写为 `model_list` 格式，并设置 `LITELLM_CONFIG=./litellm_config.yaml`。
+1. 在 `.env` 中只保留一行指向声明：
+   ```env
+   LITELLM_CONFIG=./litellm_config.yaml
+   ```
+2. 在项目根目录创建一个 `litellm_config.yaml`（可以参考自带的 `litellm_config.example.yaml`）。
 
-### 向后兼容
+示例 `litellm_config.yaml`：
+```yaml
+model_list:
+  - model_name: my-smart-model
+    litellm_params:
+      model: openai/deepseek-chat
+      api_base: https://api.deepseek.com/v1
+      api_key: "os.environ/MY_CUSTOM_SECRET_KEY"  # 从环境变量读取 Key，安全防泄漏
+```
 
-现有单 Key 配置（`GEMINI_API_KEY`、`DEEPSEEK_API_KEY`、`AIHUBMIX_KEY` 等）**无需改动**。`GEMINI_MODEL`、`OPENAI_MODEL` 等 legacy 字段仍有效，仅推荐逐步迁移至 `LITELLM_MODEL`。
+### GitHub Actions配置说明
+
+1. `Settings` → `Secrets and variables` → `Actions` → `Secret`标签页下的`New repository secret` 或者 `Variables`标签页下的`New repository variable`
+
+2. 按下表配置，只有全部必填配置正确配置，YAML 高级配置模式才可以生效，YAML配置文件的写法，可以参考自带的 `litellm_config.example.yaml`
+
+| Secret 名称 | 说明 | 必填 |
+|------------|------|:----:|
+| `LITELLM_CONFIG` | 配置文件路径，通常配置`./litellm_config.yaml` | 必填 |
+| `LITELLM_MODEL` | 模型名称 | 必填 |
+| `LITELLM_CONFIG_YAML` | 存放YAML配置文件，可以不用在存储库中提交文件 | 可选 |
+| `LITELLM_API_KEY` | 用于存储API Key，可在配置文件中引用（环境变量引用方式）。由于GitHub Actions必须要指定导入的环境变量，因此你不能像本地运行模式那样自由命名环境变量 | 可选，必须配置到repository secret中 |
+| `ANTHROPIC_API_KEY` | 如果要多个API Key，这个变量名称也能拿来用 | 可选，必须配置到repository secret中 |
+| `OPENAI_API_KEY` | 同上，可以用来存储API Key | 可选，必须配置到repository secret中 |
+
+
+> **三层配置互斥准则**：YAML 优先级最高！只要配置了 YAML，**渠道模式** 和 **新手极简模式** 统统被忽略。系统优先级为：`YAML配置 > 渠道模式 > 极简单模型`。
+
+---
+
+## 扩展功能：看图模型 (Vision) 配置
+
+系统中有些特定功能（比如上传股票软件截图，让 AI 提取出截图里的股票代码并放入自选股池）必须用到具备“视觉能力”的模型。你需在 `.env` 单独给它指派一个懂图片的模型。
+
+```env
+# 指定你看图专用的模型名
+VISION_MODEL=gemini/gemini-2.5-flash
+# 别忘了填写它对应提供商的 API KEY，如果是 gemini 就提供 GEMINI_API_KEY：
+# GEMINI_API_KEY=xxx
+```
+
+**备用看图机制：** 为了防止偶尔罢工，系统内置了切换策略。如果主视觉模型调用失败，它会按照下方的顺位尝试寻找是否有其他看图模型的 Key：
+```env
+# 默认的备用顺序：
+VISION_PROVIDER_PRIORITY=gemini,anthropic,openai
+```
+
+---
+
+## 检测与排错 (Troubleshooting)
+
+配好了之后心惊胆战不知道对不对？在命令行（Terminal）里敲入下面代码帮你挂号问诊：
+
+- `python test_env.py --config` ：纯检测 `.env` 配置文件里的逻辑写得对不对，是不是少写了什么。（秒出结果，不调用网络，纯检查本地文本拼写）
+- `python test_env.py --llm` ：系统会真的发一句问候语给大模型，让你亲眼看到他的回答。这能彻底测出你的**网络通不通、账号有没有欠费**。
+
+### 常见踩坑答疑台
+
+| 遇到了什么诡异报错？ | 罪魁祸首可能是啥？ | 该怎么收拾它？ |
+|----------------------|----------------------|------------------|
+| **屏幕蹦出一句 LLM_MODEL 未配置** | 系统不知道你到底想用哪家的哪个模型 | 在 `.env` 中写上一句明白话：`LITELLM_MODEL=provider/你的模型名`。比如 `openai/gpt-4o-mini` |
+| **我写了好几家的Key，为什么死活只有一个生效？修改还没用？** | 你把 **极简模式** 和 **渠道模式** 混着写了！ | 想好一条路走到黑——只要简单就删掉 `LLM_CHANNELS` 开头的；想要丰富备用切换就要全部转投到 `LLM_CHANNELS` 下的编制里。 |
+| **错误码报 400 或 401 或 Invalid API Key** | API Key 填错、少复制了一截、账号充值没到账、或者模型名字敲错（极度常见）。 | 1. 检查复制的 Key 前后是否有误填空格。<br> 2. 检查 Base URL 最后是不是少了一个 `/v1`。<br> 3. 检查模型名是否少写了 `openai/` 之类的前缀！ |
+| **转圈转不停，最后报 Timeout / ConnectionRefused 等** | 1. 在国内使用国外原版（像 Google、OpenAI），没开代理被墙了。<br>2. 你买的云服务器压根不能出境。 | 非常推荐使用**国内官方**（如DeepSeek、阿里）或者各种**兼容 OpenAI 的聚合中转接口**。因为中转站把网络问题帮你解决好了。 |
+
+*进阶老手的叮嘱：如果你开启了 **Agent (深度思考网络搜索问股) 模式**，这里有个经验之谈，推荐选用如 `deepseek-reasoner` 这种自带强悍逻辑推导和思考机制的大模型。如果为了省钱用小微模型跑 Agent，它逻辑能力大概率跟不上，不仅达不到预期，还会白跑一堆空流程。*

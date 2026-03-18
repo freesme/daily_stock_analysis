@@ -45,7 +45,7 @@ vim .env  # 填入真实的 API Key 等配置
 ### 3. 一键启动
 
 ```bash
-# 构建并启动
+# 构建并启动（同时包含定时分析和 Web 界面服务）
 docker-compose -f ./docker/docker-compose.yml up -d
 
 # 查看日志
@@ -54,6 +54,10 @@ docker-compose -f ./docker/docker-compose.yml logs -f
 # 查看运行状态
 docker-compose -f ./docker/docker-compose.yml ps
 ```
+
+启动成功后，在浏览器输入 `http://服务器公网IP:8000` 即可打开 Web 管理界面。如果打不开，记得先在云服务器控制台的「安全组」里放行 8000 端口。
+
+> 不知道怎么访问？→ [云服务器 Web 界面访问指南](deploy-webui-cloud.md)
 
 ### 4. 常用管理命令
 
@@ -124,7 +128,15 @@ python main.py --schedule
 
 # 后台运行（使用 nohup）
 nohup python main.py --schedule > /dev/null 2>&1 &
+
+# 启动 Web 管理界面（云服务器需先在 .env 中设置 WEBUI_HOST=0.0.0.0）
+python main.py --webui-only
+
+# 启动 Web 界面（启动时执行一次分析；需每日定时请加 --schedule 或设 SCHEDULE_ENABLED=true）
+python main.py --webui
 ```
+
+> 不知道怎么访问？→ [云服务器 Web 界面访问指南](deploy-webui-cloud.md)
 
 ---
 
@@ -363,6 +375,7 @@ git push -u origin main
 | `TAVILY_API_KEYS` | Tavily 搜索 API Key | 推荐 |
 | `MINIMAX_API_KEYS` | MiniMax Coding Plan Web Search | 可选 |
 | `SERPAPI_API_KEYS` | SerpAPI Key | 可选 |
+| `SEARXNG_BASE_URLS` | SearXNG 自建实例（无配额兜底，需在 settings.yml 启用 format: json） | 可选 |
 | `TUSHARE_TOKEN` | Tushare Token | 可选 |
 | `GEMINI_MODEL` | 模型名称（默认 gemini-2.0-flash） | 可选 |
 
@@ -435,6 +448,14 @@ A: Actions → 选择运行记录 → Artifacts → 下载 `analysis-reports-xxx
 
 **Q: 免费额度够用吗？**
 A: 每次运行约 2-5 分钟，一个月 22 个工作日 = 44-110 分钟，远低于 2000 分钟限制。
+
+---
+
+## 🌐 云服务器上部署了，但不知道怎么用浏览器访问？
+
+详见 → [云服务器 Web 界面访问指南](deploy-webui-cloud.md)
+
+涵盖：直接部署和 Docker 两种方式的启动与访问、安全组/防火墙配置、常见问题排查、Nginx 反向代理（可选）。
 
 ---
 

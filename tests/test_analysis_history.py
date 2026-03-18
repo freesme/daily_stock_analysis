@@ -14,7 +14,8 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 # Keep this test runnable when optional LLM runtime deps are not installed.
 try:
@@ -22,17 +23,27 @@ try:
 except ModuleNotFoundError:
     sys.modules["litellm"] = MagicMock()
 
+try:
+    from fastapi.testclient import TestClient
+    from api.app import create_app
+    from api.v1.endpoints.history import get_history_detail
+except ModuleNotFoundError:
+    TestClient = None
+    create_app = None
+    get_history_detail = None
+
 from src.config import Config
-from src.storage import DatabaseManager, AnalysisHistory
+from src.storage import DatabaseManager, AnalysisHistory, BacktestResult
 from src.analyzer import AnalysisResult
 from src.services.history_service import HistoryService
-
+import src.auth as auth
 
 class AnalysisHistoryTestCase(unittest.TestCase):
     """分析历史存储测试"""
 
     def setUp(self) -> None:
         """为每个用例初始化独立数据库"""
+        auth._auth_enabled = False
         self._temp_dir = tempfile.TemporaryDirectory()
         self._db_path = os.path.join(self._temp_dir.name, "test_analysis_history.db")
         os.environ["DATABASE_PATH"] = self._db_path
@@ -56,6 +67,25 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             operation_advice="持有",
             analysis_summary="基本面稳健，短期震荡",
         )
+
+    def _save_history(self, query_id: str) -> int:
+        """保存一条测试历史记录并返回主键 ID。"""
+        result = self._build_result()
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            return row.id
 
     def test_save_analysis_history_with_snapshot(self) -> None:
         """保存历史记录并写入上下文快照"""
@@ -263,6 +293,122 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         self.assertEqual(detail.get("secondary_buy"), "120.0")
         self.assertEqual(detail.get("stop_loss"), "110.0")
         self.assertEqual(detail.get("take_profit"), "150.0")
+
+    def test_history_detail_uses_fundamental_snapshot_fallback_when_context_missing(self) -> None:
+        """When context_snapshot is disabled, detail API should fallback to fundamental_snapshot."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        result = self._build_result()
+        query_id = "query_fundamental_fallback_001"
+        saved = self.db.save_analysis_history(
+            result=result,
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        self.db.save_fundamental_snapshot(
+            query_id=query_id,
+            code="600519",
+            payload={
+                "earnings": {
+                    "data": {
+                        "financial_report": {"report_date": "2025-12-31", "revenue": 1000},
+                        "dividend": {"ttm_dividend_yield_pct": 2.6, "ttm_cash_dividend_per_share": 1.3},
+                    }
+                }
+            },
+        )
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertEqual(report.details.financial_report["report_date"], "2025-12-31")
+        self.assertEqual(report.details.dividend_metrics["ttm_dividend_yield_pct"], 2.6)
+
+    def test_history_detail_returns_null_fundamental_fields_when_snapshot_absent(self) -> None:
+        """Detail API should keep new fields nullable when no context/fundamental snapshot exists."""
+        if get_history_detail is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        query_id = "query_fundamental_fallback_002"
+        saved = self.db.save_analysis_history(
+            result=self._build_result(),
+            query_id=query_id,
+            report_type="simple",
+            news_content="新闻摘要",
+            context_snapshot=None,
+            save_snapshot=False,
+        )
+        self.assertEqual(saved, 1)
+
+        with self.db.get_session() as session:
+            row = session.query(AnalysisHistory).filter(AnalysisHistory.query_id == query_id).first()
+            if row is None:
+                self.fail("未找到保存的历史记录")
+            record_id = row.id
+
+        report = get_history_detail(str(record_id), db_manager=self.db)
+        self.assertIsNone(report.details.financial_report)
+        self.assertIsNone(report.details.dividend_metrics)
+
+    def test_delete_analysis_history_records_also_cleans_backtests(self) -> None:
+        """删除历史记录时应一并清理关联回测结果。"""
+        record_id = self._save_history("query_delete_001")
+
+        with self.db.session_scope() as session:
+            session.add(BacktestResult(
+                analysis_history_id=record_id,
+                code="600519",
+                analysis_date=None,
+                eval_window_days=10,
+                engine_version="v1",
+                eval_status="pending",
+            ))
+
+        deleted = self.db.delete_analysis_history_records([record_id])
+        self.assertEqual(deleted, 1)
+
+        with self.db.get_session() as session:
+            self.assertIsNone(session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id).first())
+            self.assertEqual(
+                session.query(BacktestResult).filter(BacktestResult.analysis_history_id == record_id).count(),
+                0,
+            )
+
+    @patch("src.auth.is_auth_enabled", return_value=False)
+    def test_delete_history_api_deletes_selected_records(self, mock_auth) -> None:
+        """DELETE /api/v1/history should remove only the requested records."""
+        if TestClient is None or create_app is None:
+            self.skipTest("fastapi is not installed in this test environment")
+
+        record_id_1 = self._save_history("query_delete_api_001")
+        record_id_2 = self._save_history("query_delete_api_002")
+
+        static_dir = Path(self._temp_dir.name) / "empty-static"
+        static_dir.mkdir(exist_ok=True)
+        client = TestClient(create_app(static_dir=static_dir))
+
+        response = client.request(
+            "DELETE",
+            "/api/v1/history",
+            json={"record_ids": [record_id_1]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json().get("deleted"), 1)
+
+        with self.db.get_session() as session:
+            self.assertIsNone(session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id_1).first())
+            self.assertIsNotNone(session.query(AnalysisHistory).filter(AnalysisHistory.id == record_id_2).first())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ import type {
   SystemConfigResponse,
   SystemConfigSchemaResponse,
   SystemConfigValidationErrorResponse,
+  TestLLMChannelRequest,
+  TestLLMChannelResponse,
   UpdateSystemConfigRequest,
   UpdateSystemConfigResponse,
   ValidateSystemConfigRequest,
@@ -69,6 +71,18 @@ function toSnakeValidatePayload(payload: ValidateSystemConfigRequest): Record<st
   };
 }
 
+function toSnakeTestChannelPayload(payload: TestLLMChannelRequest): Record<string, unknown> {
+  return {
+    name: payload.name,
+    protocol: payload.protocol,
+    base_url: payload.baseUrl ?? '',
+    api_key: payload.apiKey ?? '',
+    models: payload.models,
+    enabled: payload.enabled ?? true,
+    timeout_seconds: payload.timeoutSeconds ?? 20,
+  };
+}
+
 export const systemConfigApi = {
   async getConfig(includeSchema = true): Promise<SystemConfigResponse> {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/system/config', {
@@ -88,6 +102,14 @@ export const systemConfigApi = {
       toSnakeValidatePayload(payload),
     );
     return toCamelCase<ValidateSystemConfigResponse>(response.data);
+  },
+
+  async testLLMChannel(payload: TestLLMChannelRequest): Promise<TestLLMChannelResponse> {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/system/config/llm/test-channel',
+      toSnakeTestChannelPayload(payload),
+    );
+    return toCamelCase<TestLLMChannelResponse>(response.data);
   },
 
   async update(payload: UpdateSystemConfigRequest): Promise<UpdateSystemConfigResponse> {

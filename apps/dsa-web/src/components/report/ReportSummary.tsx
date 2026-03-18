@@ -30,7 +30,7 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
   );
 
   return (
-    <div className="space-y-3 animate-fade-in">
+    <div className="space-y-5 pb-8 animate-fade-in">
       {/* 概览区（首屏） */}
       <ReportOverview
         meta={meta}
@@ -42,14 +42,14 @@ export const ReportSummary: React.FC<ReportSummaryProps> = ({
       <ReportStrategy strategy={strategy} />
 
       {/* 资讯区 */}
-      <ReportNews recordId={recordId} />
+      <ReportNews recordId={recordId} limit={8} />
 
       {/* 透明度与追溯区 */}
       <ReportDetails details={details} recordId={recordId} />
 
       {/* 分析模型标记（Issue #528）— 报告末尾 */}
       {shouldShowModel && (
-        <p className="text-xs text-gray-500 mt-3">
+        <p className="px-1 text-xs text-muted-text">
           分析模型: {modelUsed}
         </p>
       )}

@@ -16,6 +16,18 @@
 # ===================================
 
 model_list:
+  # --- siliconflow (OpenAI 兼容，一个 Key 使用多种模型) ---
+  # 这是一个关于如何配置在LiteLLM自定义OpenAI兼容API接口的示例
+  - model_name: openai/Qwen/Qwen3.5-397B-A17B
+    litellm_params:
+      model: openai/Qwen/Qwen3.5-397B-A17B
+      api_key: "os.environ/LITELLM_API_KEY" # 从环境变量读取 Key，安全防泄漏
+      api_base: https://api.siliconflow.cn/v1
+      # 以下配置是表示如何启用Qwen模型的enable_thinking开关
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: true
+
   # --- AIHubmix (OpenAI 兼容，一个 Key 使用多种模型) ---
   - model_name: openai/gpt-4o-mini
     litellm_params:

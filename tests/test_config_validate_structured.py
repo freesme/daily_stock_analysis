@@ -28,7 +28,7 @@ def _make_config(**kwargs) -> Config:
         stock_list=["600519"],
         tushare_token=None,
         # Populate llm_model_list as the three-tier signal
-        llm_model_list=[{"model_name": "gemini/gemini-2.0-flash", "litellm_params": {"api_key": "sk-test"}}],
+        llm_model_list=[{"model_name": "gemini/gemini-2.0-flash", "litellm_params": {"model": "gemini/gemini-2.0-flash", "api_key": "sk-test"}}],
         litellm_model="gemini/gemini-2.0-flash",
         gemini_api_keys=[],
         anthropic_api_keys=[],
@@ -38,6 +38,7 @@ def _make_config(**kwargs) -> Config:
         tavily_api_keys=[],
         brave_api_keys=[],
         serpapi_keys=[],
+        searxng_base_urls=[],
         wechat_webhook_url="https://example.com/webhook",
         feishu_webhook_url=None,
         telegram_bot_token=None,
@@ -145,6 +146,7 @@ class TestValidateStructuredLLM:
         ]
         cfg = _make_config(
             llm_model_list=channel_model_list,
+            litellm_model="openai/gpt-4o-mini",
             gemini_api_keys=[],
             anthropic_api_keys=[],
             openai_api_keys=[],
@@ -160,6 +162,7 @@ class TestValidateStructuredLLM:
         ]
         cfg = _make_config(
             llm_model_list=yaml_model_list,
+            litellm_model="gemini/gemini-2.5-flash",
             litellm_config_path="/tmp/litellm.yaml",
             gemini_api_keys=[],
             anthropic_api_keys=[],
@@ -200,6 +203,35 @@ class TestValidateStructuredLLM:
         assert llm_issues, "Expected an info issue about LITELLM_MODEL"
         assert all(i.severity == "info" for i in llm_issues)
 
+    def test_direct_env_provider_model_without_model_list_no_error(self):
+        """Direct LiteLLM env providers should count as configured for runtime."""
+        cfg = _make_config(
+            llm_model_list=[],
+            litellm_model="cohere/command-r-plus",
+        )
+        issues = cfg.validate_structured()
+        assert not any(i.severity == "error" and "LLM" in i.message for i in issues)
+
+    def test_configured_primary_model_missing_from_channels_is_error(self):
+        cfg = _make_config(
+            llm_model_list=[
+                {"model_name": "openai/gpt-4o-mini", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-test"}},
+            ],
+            litellm_model="openai/gpt-4o",
+        )
+        issues = cfg.validate_structured()
+        assert any(i.severity == "error" and i.field == "LITELLM_MODEL" for i in issues)
+
+    def test_configured_vision_model_missing_from_channels_is_warning(self):
+        cfg = _make_config(
+            llm_model_list=[
+                {"model_name": "openai/gpt-4o-mini", "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "sk-test"}},
+            ],
+            vision_model="openai/gpt-4o",
+        )
+        issues = cfg.validate_structured()
+        assert any(i.severity == "warning" and i.field == "VISION_MODEL" for i in issues)
+
 
 # ---------------------------------------------------------------------------
 # validate_structured() — notification & search
@@ -222,6 +254,13 @@ class TestValidateStructuredNotification:
         issues = cfg.validate_structured()
         info = [i for i in issues if i.severity == "info"]
         assert any("搜索引擎" in i.message for i in info)
+
+    def test_searxng_configured_no_search_info(self):
+        """When searxng_base_urls is configured, no 'unconfigured search engine' info."""
+        cfg = _make_config(searxng_base_urls=["https://searx.example.org"])
+        issues = cfg.validate_structured()
+        info = [i for i in issues if i.severity == "info"]
+        assert not any("搜索引擎" in i.message and "未配置" in i.message for i in info)
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +338,10 @@ class TestVisionKeyValidation:
     def test_primary_provider_key_sufficient_even_if_not_in_priority(self):
         """Primary model's provider key is checked even when absent from VISION_PROVIDER_PRIORITY."""
         cfg = _make_config(
+            llm_model_list=[
+                {"model_name": "openai/gpt-4o", "litellm_params": {"model": "openai/gpt-4o", "api_key": "sk-test"}},
+            ],
+            litellm_model="openai/gpt-4o",
             vision_model="openai/gpt-4o",
             vision_provider_priority="gemini,anthropic",  # openai excluded from priority
             openai_api_keys=["sk-openai-validkey-xyz"],
@@ -315,6 +358,52 @@ class TestVisionKeyValidation:
         cfg = _make_config(vision_model="", gemini_api_keys=[])
         issues = cfg.validate_structured()
         assert not any(i.field == "VISION_MODEL" for i in issues)
+
+
+# ---------------------------------------------------------------------------
+# Env alias compatibility
+# ---------------------------------------------------------------------------
+
+class TestEnvAliasCompatibility:
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_discord_channel_id_legacy_alias_is_still_loaded(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ):
+        with patch.dict(
+            "os.environ",
+            {
+                "DISCORD_BOT_TOKEN": "token",
+                "DISCORD_CHANNEL_ID": "legacy-channel",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        assert config.discord_bot_token == "token"
+        assert config.discord_main_channel_id == "legacy-channel"
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_discord_main_channel_id_takes_precedence_over_legacy_alias(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ):
+        with patch.dict(
+            "os.environ",
+            {
+                "DISCORD_BOT_TOKEN": "token",
+                "DISCORD_CHANNEL_ID": "legacy-channel",
+                "DISCORD_MAIN_CHANNEL_ID": "main-channel",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        assert config.discord_main_channel_id == "main-channel"
 
 
 # ---------------------------------------------------------------------------

@@ -248,8 +248,6 @@ class MarketAnalyzer:
             return []
         
         all_news = []
-        today = datetime.now()
-        date_str = today.strftime('%Y年%m月%d日')
 
         # 按 region 使用不同的新闻搜索词
         search_queries = self.profile.news_queries

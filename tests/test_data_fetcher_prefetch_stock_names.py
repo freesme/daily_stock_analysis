@@ -46,6 +46,21 @@ class TestPrefetchStockNames(unittest.TestCase):
         self.assertEqual(name, "测试股票")
         manager.get_realtime_quote.assert_not_called()
 
+    def test_get_stock_name_prefers_static_mapping_before_remote_fetchers(self):
+        manager = DataFetcherManager.__new__(DataFetcherManager)
+        remote_fetcher = MagicMock()
+        remote_fetcher.name = "RemoteFetcher"
+        remote_fetcher.get_stock_name.return_value = "远程名称"
+        manager._fetchers = [remote_fetcher]
+        manager.get_realtime_quote = MagicMock()
+
+        name = DataFetcherManager.get_stock_name(manager, "600519", allow_realtime=False)
+
+        self.assertEqual(name, "贵州茅台")
+        manager.get_realtime_quote.assert_not_called()
+        remote_fetcher.get_stock_name.assert_not_called()
+        self.assertEqual(manager._stock_name_cache["600519"], "贵州茅台")
+
     def test_pytdx_get_stock_name_reads_all_security_list_pages(self):
         fetcher = PytdxFetcher(hosts=[])
 

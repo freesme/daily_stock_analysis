@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 """
 ===================================
 股票代码与名称映射
@@ -25,6 +27,48 @@ STOCK_NAME_MAP = {
     "600900": "长江电力",
     "601166": "兴业银行",
     "600028": "中国石化",
+    "600030": "中信证券",
+    "600031": "三一重工",
+    "600050": "中国联通",
+    "600104": "上汽集团",
+    "600111": "北方稀土",
+    "600150": "中国船舶",
+    "600309": "万华化学",
+    "600406": "国电南瑞",
+    "600690": "海尔智家",
+    "600760": "中航沈飞",
+    "600809": "山西汾酒",
+    "600887": "伊利股份",
+    "600930": "华电新能",
+    "601088": "中国神华",
+    "601127": "赛力斯",
+    "601211": "国泰海通",
+    "601225": "陕西煤业",
+    "601288": "农业银行",
+    "601328": "交通银行",
+    "601398": "工商银行",
+    "601601": "中国太保",
+    "601628": "中国人寿",
+    "601658": "邮储银行",
+    "601668": "中国建筑",
+    "601728": "中国电信",
+    "601816": "京沪高铁",
+    "601857": "中国石油",
+    "601888": "中国中免",
+    "601899": "紫金矿业",
+    "601919": "中远海控",
+    "601985": "中国核电",
+    "601988": "中国银行",
+    "603019": "中科曙光",
+    "603259": "药明康德",
+    "603501": "豪威集团",
+    "603993": "洛阳钼业",
+    "688008": "澜起科技",
+    "688012": "中微公司",
+    "688041": "海光信息",
+    "688111": "金山办公",
+    "688256": "寒武纪",
+    "688981": "中芯国际",
     # === US stocks ===
     "AAPL": "苹果",
     "TSLA": "特斯拉",
@@ -61,3 +105,35 @@ STOCK_NAME_MAP = {
     "00941": "中国移动",
     "00883": "中国海洋石油",
 }
+
+
+def is_meaningful_stock_name(name: str | None, stock_code: str) -> bool:
+    """Return whether a stock name is useful for display or caching."""
+    if not name:
+        return False
+
+    normalized_name = str(name).strip()
+    if not normalized_name:
+        return False
+
+    normalized_code = (stock_code or "").strip().upper()
+    if normalized_name.upper() == normalized_code:
+        return False
+
+    if normalized_name.startswith("股票"):
+        return False
+
+    placeholder_values = {
+        "N/A",
+        "NA",
+        "NONE",
+        "NULL",
+        "--",
+        "-",
+        "UNKNOWN",
+        "TICKER",
+    }
+    if normalized_name.upper() in placeholder_values:
+        return False
+
+    return True

@@ -1113,10 +1113,10 @@ class NotificationService(
                 
                 # 业绩预期
                 if intel.get('earnings_outlook'):
-                    outlook = intel['earnings_outlook'][:60]
+                    outlook = str(intel['earnings_outlook'])[:60]
                     info_lines.append(f"📊 业绩: {outlook}")
                 if intel.get('sentiment_summary'):
-                    sentiment = intel['sentiment_summary'][:50]
+                    sentiment = str(intel['sentiment_summary'])[:50]
                     info_lines.append(f"💭 舆情: {sentiment}")
                 if info_lines:
                     lines.extend(info_lines)
@@ -1127,7 +1127,8 @@ class NotificationService(
                 if risks:
                     lines.append("🚨 **风险**:")
                     for risk in risks[:2]:  # 最多显示2条
-                        risk_text = risk[:50] + "..." if len(risk) > 50 else risk
+                        risk_str = str(risk)
+                        risk_text = risk_str[:50] + "..." if len(risk_str) > 50 else risk_str
                         lines.append(f"   • {risk_text}")
                     lines.append("")
                 
@@ -1136,16 +1137,17 @@ class NotificationService(
                 if catalysts:
                     lines.append("✨ **利好**:")
                     for cat in catalysts[:2]:  # 最多显示2条
-                        cat_text = cat[:50] + "..." if len(cat) > 50 else cat
+                        cat_str = str(cat)
+                        cat_text = cat_str[:50] + "..." if len(cat_str) > 50 else cat_str
                         lines.append(f"   • {cat_text}")
                     lines.append("")
                 
                 # 狙击点位
                 sniper = battle.get('sniper_points', {}) if battle else {}
                 if sniper:
-                    ideal_buy = sniper.get('ideal_buy', '')
-                    stop_loss = sniper.get('stop_loss', '')
-                    take_profit = sniper.get('take_profit', '')
+                    ideal_buy = str(sniper.get('ideal_buy', ''))
+                    stop_loss = str(sniper.get('stop_loss', ''))
+                    take_profit = str(sniper.get('take_profit', ''))
                     points = []
                     if ideal_buy:
                         points.append(f"🎯买点:{ideal_buy[:15]}")
@@ -1160,8 +1162,8 @@ class NotificationService(
                 # 持仓建议
                 pos_advice = core.get('position_advice', {}) if core else {}
                 if pos_advice:
-                    no_pos = pos_advice.get('no_position', '')
-                    has_pos = pos_advice.get('has_position', '')
+                    no_pos = str(pos_advice.get('no_position', ''))
+                    has_pos = str(pos_advice.get('has_position', ''))
                     if no_pos:
                         lines.append(f"🆕 空仓者: {no_pos[:50]}")
                     if has_pos:
@@ -1172,7 +1174,7 @@ class NotificationService(
                 checklist = battle.get('action_checklist', []) if battle else []
                 if checklist:
                     # 只显示不通过的项目
-                    failed_checks = [c for c in checklist if c.startswith('❌') or c.startswith('⚠️')]
+                    failed_checks = [str(c) for c in checklist if str(c).startswith('❌') or str(c).startswith('⚠️')]
                     if failed_checks:
                         lines.append("**检查未通过项**:")
                         for check in failed_checks[:3]:
@@ -1361,14 +1363,14 @@ class NotificationService(
                     lines.append("### 📰 重要信息")
                     lines.append("")
                     info_added = True
-                lines.append(f"📊 **业绩预期**: {intel['earnings_outlook'][:100]}")
+                lines.append(f"📊 **业绩预期**: {str(intel['earnings_outlook'])[:100]}")
             
             if intel.get('sentiment_summary'):
                 if not info_added:
                     lines.append("### 📰 重要信息")
                     lines.append("")
                     info_added = True
-                lines.append(f"💭 **舆情情绪**: {intel['sentiment_summary'][:80]}")
+                lines.append(f"💭 **舆情情绪**: {str(intel['sentiment_summary'])[:80]}")
             
             # 风险警报
             risks = intel.get('risk_alerts', [])
@@ -1380,7 +1382,7 @@ class NotificationService(
                 lines.append("")
                 lines.append("🚨 **风险警报**:")
                 for risk in risks[:3]:
-                    lines.append(f"- {risk[:60]}")
+                    lines.append(f"- {str(risk)[:60]}")
             
             # 利好催化
             catalysts = intel.get('positive_catalysts', [])
@@ -1388,7 +1390,7 @@ class NotificationService(
                 lines.append("")
                 lines.append("✨ **利好催化**:")
                 for cat in catalysts[:3]:
-                    lines.append(f"- {cat[:60]}")
+                    lines.append(f"- {str(cat)[:60]}")
         
         if info_added:
             lines.append("")

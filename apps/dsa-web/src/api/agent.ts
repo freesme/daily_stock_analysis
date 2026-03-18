@@ -8,7 +8,7 @@ export interface ChatStreamOptions {
 
 export interface ChatRequest {
   message: string;
-  skills?: string[];
+  strategies?: string[];
 }
 
 export interface ChatStreamRequest extends ChatRequest {

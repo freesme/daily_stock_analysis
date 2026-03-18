@@ -30,6 +30,9 @@ from api.v1.schemas.analysis import (
     AnalyzeRequest,
     AnalysisResultResponse,
     TaskAccepted,
+    BatchTaskAcceptedResponse,
+    BatchTaskAcceptedItem,
+    BatchDuplicateTaskItem,
     TaskStatus,
     TaskInfo,
     TaskListResponse,
@@ -50,7 +53,11 @@ from src.services.task_queue import (
     DuplicateTaskError,
     TaskStatus as TaskStatusEnum,
 )
-from src.utils.data_processing import normalize_model_used, parse_json_field
+from src.utils.data_processing import (
+    normalize_model_used,
+    parse_json_field,
+    extract_fundamental_detail_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +73,10 @@ router = APIRouter()
     response_model=AnalysisResultResponse,
     responses={
         200: {"description": "分析完成（同步模式）", "model": AnalysisResultResponse},
-        202: {"description": "分析任务已接受（异步模式）", "model": TaskAccepted},
+        202: {
+            "description": "分析任务已接受（异步模式）",
+            "model": Union[TaskAccepted, BatchTaskAcceptedResponse],
+        },
         400: {"description": "请求参数错误", "model": ErrorResponse},
         409: {"description": "股票正在分析中，拒绝重复提交", "model": DuplicateTaskErrorResponse},
         500: {"description": "分析失败", "model": ErrorResponse},
@@ -94,7 +104,7 @@ def trigger_analysis(
         
     Returns:
         AnalysisResultResponse: 分析结果（同步模式）
-        TaskAccepted: 任务已接受（异步模式，返回 202）
+        TaskAccepted | BatchTaskAcceptedResponse: 任务已接受（异步模式，返回 202）
         
     Raises:
         HTTPException: 400 - 请求参数错误
@@ -119,61 +129,106 @@ def trigger_analysis(
 
     # 统一大小写后去重，确保 ['aapl', 'AAPL'] 被识别为同一股票（Issue #355）
     stock_codes = [canonical_stock_code(c) for c in stock_codes]
+    stock_codes = [c for c in stock_codes if c]
     stock_codes = list(dict.fromkeys(stock_codes))
-    stock_code = stock_codes[0]  # 当前只处理第一个
 
-    # 异步模式：使用任务队列
-    if request.async_mode:
-        return _handle_async_analysis(stock_code, request)
+    if not stock_codes:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "validation_error",
+                "message": "股票代码不能为空或仅包含空白字符"
+            }
+        )
 
-    # 同步模式：直接执行分析
-    return _handle_sync_analysis(stock_code, request)
+    # 同步模式仅支持单只股票
+    if not request.async_mode:
+        if len(stock_codes) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "validation_error",
+                    "message": "同步模式仅支持单只股票分析，请使用 async_mode=true 进行批量分析"
+                }
+            )
+        return _handle_sync_analysis(stock_codes[0], request)
+
+    # 异步模式：为每只股票提交任务
+    return _handle_async_analysis_batch(stock_codes, request)
 
 
-def _handle_async_analysis(
-    stock_code: str,
+def _handle_async_analysis_batch(
+    stock_codes: list,
     request: AnalyzeRequest
 ) -> JSONResponse:
     """
-    处理异步分析请求
+    处理异步分析请求（支持批量）
     
-    提交任务到队列，立即返回 202
-    如果股票正在分析中，返回 409
+    为每只股票提交任务到队列，立即返回 202
+    如果仅一只股票且正在分析中，返回 409
     """
     task_queue = get_task_queue()
-    
-    try:
-        # 提交任务（如果重复会抛出 DuplicateTaskError）
-        task_info = task_queue.submit_task(
-            stock_code=stock_code,
-            stock_name=None,  # 名称在分析过程中获取
-            report_type=request.report_type,
-            force_refresh=request.force_refresh,
-        )
-        
-        # 返回 202 Accepted
-        task_accepted = TaskAccepted(
-            task_id=task_info.task_id,
+    accepted_tasks, duplicate_errors = task_queue.submit_tasks_batch(
+        stock_codes=stock_codes,
+        stock_name=None,
+        report_type=request.report_type,
+        force_refresh=request.force_refresh,
+    )
+
+    accepted = [
+        BatchTaskAcceptedItem(
+            task_id=task.task_id,
+            stock_code=task.stock_code,
             status="pending",
-            message=f"分析任务已加入队列: {stock_code}"
+            message=f"分析任务已加入队列: {task.stock_code}",
         )
-        return JSONResponse(
-            status_code=202,
-            content=task_accepted.model_dump()
+        for task in accepted_tasks
+    ]
+    duplicates = [
+        BatchDuplicateTaskItem(
+            stock_code=dup.stock_code,
+            existing_task_id=dup.existing_task_id,
+            message=str(dup),
         )
-        
-    except DuplicateTaskError as e:
-        # 股票正在分析中，返回 409 Conflict
+        for dup in duplicate_errors
+    ]
+    
+    # 单只股票且被拒绝：保持 409 兼容性
+    if len(stock_codes) == 1 and duplicates:
+        dup = duplicates[0]
         error_response = DuplicateTaskErrorResponse(
             error="duplicate_task",
-            message=str(e),
-            stock_code=e.stock_code,
-            existing_task_id=e.existing_task_id,
+            message=dup.message,
+            stock_code=dup.stock_code,
+            existing_task_id=dup.existing_task_id,
         )
         return JSONResponse(
             status_code=409,
             content=error_response.model_dump()
         )
+    
+    # 单只股票成功：保持原有响应格式兼容性
+    if len(stock_codes) == 1 and accepted:
+        task_accepted = TaskAccepted(
+            task_id=accepted[0].task_id,
+            status="pending",
+            message=accepted[0].message,
+        )
+        return JSONResponse(
+            status_code=202,
+            content=task_accepted.model_dump()
+        )
+    
+    # 批量：返回汇总结果
+    batch_response = BatchTaskAcceptedResponse(
+        accepted=accepted,
+        duplicates=duplicates,
+        message=f"已提交 {len(accepted)} 个任务，{len(duplicates)} 个重复跳过",
+    )
+    return JSONResponse(
+        status_code=202,
+        content=batch_response.model_dump()
+    )
 
 
 def _handle_sync_analysis(
@@ -210,8 +265,17 @@ def _handle_sync_analysis(
 
         # 构建报告结构
         report_data = result.get("report", {})
+        context_snapshot, fundamental_snapshot = _load_sync_fundamental_sources(
+            query_id=query_id,
+            stock_code=result.get("stock_code", stock_code),
+        )
         report = _build_analysis_report(
-            report_data, query_id, stock_code, result.get("stock_name")
+            report_data,
+            query_id,
+            stock_code,
+            result.get("stock_name"),
+            context_snapshot=context_snapshot,
+            fallback_fundamental_payload=fundamental_snapshot,
         )
 
         return AnalysisResultResponse(
@@ -504,11 +568,44 @@ def get_analysis_status(task_id: str) -> TaskStatus:
 # 辅助函数
 # ============================================================
 
+def _load_sync_fundamental_sources(
+    query_id: str,
+    stock_code: str,
+) -> tuple[Optional[Any], Optional[Dict[str, Any]]]:
+    """
+    Load context_snapshot and fallback fundamental snapshot for sync analyze response.
+    """
+    try:
+        from src.storage import DatabaseManager
+
+        db = DatabaseManager.get_instance()
+        records = db.get_analysis_history(query_id=query_id, code=stock_code, limit=1)
+        context_snapshot = None
+        if records:
+            context_snapshot = parse_json_field(getattr(records[0], "context_snapshot", None))
+
+        fallback_fundamental = db.get_latest_fundamental_snapshot(
+            query_id=query_id,
+            code=stock_code,
+        )
+        return context_snapshot, fallback_fundamental
+    except Exception as e:
+        logger.debug(
+            "load sync fundamental sources failed (fail-open): query_id=%s stock_code=%s err=%s",
+            query_id,
+            stock_code,
+            e,
+        )
+        return None, None
+
+
 def _build_analysis_report(
         report_data: Dict[str, Any],
         query_id: str,
         stock_code: str,
-        stock_name: Optional[str] = None
+        stock_name: Optional[str] = None,
+        context_snapshot: Optional[Any] = None,
+        fallback_fundamental_payload: Optional[Dict[str, Any]] = None,
 ) -> AnalysisReport:
     """
     构建符合 API 规范的分析报告
@@ -518,6 +615,8 @@ def _build_analysis_report(
         query_id: 查询 ID
         stock_code: 股票代码
         stock_name: 股票名称
+        context_snapshot: 上下文快照（可选）
+        fallback_fundamental_payload: 基本面快照 payload（可选）
         
     Returns:
         AnalysisReport: 结构化的分析报告
@@ -555,12 +654,18 @@ def _build_analysis_report(
             take_profit=strategy_data.get("take_profit")
         )
 
+    extracted_fundamental = extract_fundamental_detail_fields(
+        context_snapshot=context_snapshot,
+        fallback_fundamental_payload=fallback_fundamental_payload,
+    )
     details = None
-    if details_data:
+    if details_data or any(extracted_fundamental.values()) or context_snapshot is not None:
         details = ReportDetails(
             news_content=details_data.get("news_summary") or details_data.get("news_content"),
             raw_result=details_data,
-            context_snapshot=None
+            context_snapshot=context_snapshot,
+            financial_report=extracted_fundamental.get("financial_report"),
+            dividend_metrics=extracted_fundamental.get("dividend_metrics"),
         )
 
     return AnalysisReport(

@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import litellm
 from litellm import Router
 
-from src.config import get_config, get_api_keys_for_model, extra_litellm_params
+from src.config import get_config, get_api_keys_for_model, extra_litellm_params, get_configured_llm_models
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +212,38 @@ class LLMToolAdapter:
         Returns:
             LLMResponse with either content (final answer) or tool_calls.
         """
+        return self.call_completion(messages, tools=tools, provider=provider)
+
+    def call_text(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        provider: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> LLMResponse:
+        """Send a text-only completion through the shared routing stack."""
+        return self.call_completion(
+            messages,
+            tools=None,
+            provider=provider,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
+    def call_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        tools: Optional[List[dict]] = None,
+        provider: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> LLMResponse:
+        """Shared completion path for both tool and text-only calls."""
         config = self._config
         models_to_try = [config.litellm_model] + (config.litellm_fallback_models or [])
         models_to_try = [m for m in models_to_try if m]
@@ -219,7 +251,14 @@ class LLMToolAdapter:
         last_error = None
         for model in models_to_try:
             try:
-                return self._call_litellm_model(messages, tools, model)
+                return self._call_litellm_model(
+                    messages,
+                    tools or [],
+                    model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                )
             except Exception as e:
                 logger.warning(f"Agent LLM call failed with {model}: {e}")
                 last_error = e
@@ -234,6 +273,10 @@ class LLMToolAdapter:
         messages: List[Dict[str, Any]],
         tools: List[dict],
         model: str,
+        *,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: Optional[float] = None,
     ) -> LLMResponse:
         """Call a specific litellm model with OpenAI-format messages and tools."""
         openai_messages = self._convert_messages(messages)
@@ -244,8 +287,12 @@ class LLMToolAdapter:
         call_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": openai_messages,
-            "temperature": self._get_temperature(model),
+            "temperature": self._get_temperature(model) if temperature is None else temperature,
         }
+        if max_tokens is not None:
+            call_kwargs["max_tokens"] = max_tokens
+        if timeout is not None:
+            call_kwargs["timeout"] = timeout
 
         extra = get_thinking_extra_body(model_short)
         if extra:
@@ -256,14 +303,17 @@ class LLMToolAdapter:
 
         # Use Router for primary model (multi-key), direct litellm for others
         use_channel_router = self._has_channel_config()
-        if use_channel_router and self._router:
-            # Channel / YAML path: Router manages all models
+        _router_model_names = set(get_configured_llm_models(self._config.llm_model_list))
+        if use_channel_router and self._router and model in _router_model_names:
+            # Channel / YAML path: Router manages all models in its model_list
             response = self._router.completion(**call_kwargs)
-        elif self._router and model == self._config.litellm_model:
+        elif self._router and model == self._config.litellm_model and not use_channel_router:
             # Legacy path: Router for primary model multi-key
             response = self._router.completion(**call_kwargs)
         else:
-            # Legacy path: direct call for fallback/other models
+            # Legacy/direct-env path: direct call (also handles direct-env
+            # providers like groq/ or bedrock/ that are not in the Router
+            # model_list even when channel mode is active)
             keys = get_api_keys_for_model(model, self._config)
             if keys:
                 call_kwargs["api_key"] = keys[0]
@@ -273,13 +323,8 @@ class LLMToolAdapter:
         return self._parse_litellm_response(response, model)
 
     def _get_temperature(self, model: str) -> float:
-        """Return temperature from config based on provider prefix."""
-        config = self._config
-        if model.startswith("gemini/") or model.startswith("vertex_ai/"):
-            return config.gemini_temperature
-        if model.startswith("anthropic/"):
-            return config.anthropic_temperature
-        return config.openai_temperature
+        """Return unified temperature from config."""
+        return self._config.llm_temperature
 
     def _convert_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal message format to OpenAI-compatible format for litellm."""

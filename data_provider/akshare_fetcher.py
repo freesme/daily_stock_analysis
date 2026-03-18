@@ -43,7 +43,7 @@ from tenacity import (
 
 from patch.eastmoney_patch import eastmoney_patch
 from src.config import get_config
-from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code
+from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS, is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code
 from .realtime_types import (
     UnifiedRealtimeQuote, ChipDistribution, RealtimeSource,
     get_realtime_circuit_breaker, get_chip_circuit_breaker,
@@ -125,7 +125,10 @@ def _is_hk_code(stock_code: str) -> bool:
         True 表示是港股代码，False 表示不是港股代码
     """
     # 去除可能的 'hk' 前缀并检查是否为纯数字
-    code = stock_code.lower()
+    code = stock_code.strip().lower()
+    if code.endswith('.hk'):
+        numeric_part = code[:-3]
+        return numeric_part.isdigit() and 1 <= len(numeric_part) <= 5
     if code.startswith('hk'):
         # 带 hk 前缀的一定是港股，去掉前缀后应为纯数字（1-5位）
         numeric_part = code[2:]
@@ -791,14 +794,8 @@ class AkshareFetcher(BaseFetcher):
         Returns:
             UnifiedRealtimeQuote 对象，获取失败返回 None
         """
-        # 检查熔断器状态
         circuit_breaker = get_realtime_circuit_breaker()
-        source_key = f"akshare_{source}"
-        
-        if not circuit_breaker.is_available(source_key):
-            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
-            return None
-        
+
         # 根据代码类型选择不同的获取方法
         if _is_us_code(stock_code):
             # 美股不使用 Akshare，由 YfinanceFetcher 处理
@@ -807,8 +804,16 @@ class AkshareFetcher(BaseFetcher):
         elif _is_hk_code(stock_code):
             return self._get_hk_realtime_quote(stock_code)
         elif _is_etf_code(stock_code):
+            source_key = "akshare_etf"
+            if not circuit_breaker.is_available(source_key):
+                logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+                return None
             return self._get_etf_realtime_quote(stock_code)
         else:
+            source_key = f"akshare_{source}"
+            if not circuit_breaker.is_available(source_key):
+                logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+                return None
             # 普通 A 股：根据 source 选择数据源
             if source == "sina":
                 return self._get_stock_realtime_quote_sina(stock_code)
@@ -1335,6 +1340,10 @@ class AkshareFetcher(BaseFetcher):
         import akshare as ak
         circuit_breaker = get_realtime_circuit_breaker()
         source_key = "akshare_hk"
+
+        if not circuit_breaker.is_available(source_key):
+            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+            return None
         
         try:
             # 防封禁策略
@@ -1342,7 +1351,12 @@ class AkshareFetcher(BaseFetcher):
             self._enforce_rate_limit()
             
             # 确保代码格式正确（5位数字）
-            code = stock_code.lower().replace('hk', '').zfill(5)
+            raw_code = stock_code.strip().lower()
+            if raw_code.endswith('.hk'):
+                raw_code = raw_code[:-3]
+            if raw_code.startswith('hk'):
+                raw_code = raw_code[2:]
+            code = raw_code.zfill(5)
             
             logger.info(f"[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
             import time as _time
@@ -1413,6 +1427,11 @@ class AkshareFetcher(BaseFetcher):
         # 美股没有筹码分布数据（Akshare 不支持）
         if _is_us_code(stock_code):
             logger.debug(f"[API跳过] {stock_code} 是美股，无筹码分布数据")
+            return None
+
+        # 港股没有筹码分布数据（stock_cyq_em 是 A 股专属接口）
+        if _is_hk_code(stock_code):
+            logger.debug(f"[API跳过] {stock_code} 是港股，无筹码分布数据")
             return None
 
         # ETF/指数没有筹码分布数据
@@ -1583,7 +1602,7 @@ class AkshareFetcher(BaseFetcher):
             logger.info("[API调用] ak.stock_zh_a_spot_em() 获取市场统计...")
             df = ak.stock_zh_a_spot_em()
             if df is not None and not df.empty:
-                return self._calc_market_stats(df, change_col='涨跌幅', amount_col='成交额')
+                return self._calc_market_stats(df)
         except Exception as e:
             logger.warning(f"[Akshare] 东财接口获取市场统计失败: {e}，尝试新浪接口")
 
@@ -1595,20 +1614,7 @@ class AkshareFetcher(BaseFetcher):
             logger.info("[API调用] ak.stock_zh_a_spot() 获取市场统计(新浪)...")
             df = ak.stock_zh_a_spot()
             if df is not None and not df.empty:
-                change_col = None
-                for col in ['change_percent', 'changepercent', '涨跌幅', 'trade_ratio']:
-                    if col in df.columns:
-                        change_col = col
-                        break
-
-                amount_col = None
-                for col in ['amount', '成交额', 'trade_amount']:
-                    if col in df.columns:
-                        amount_col = col
-                        break
-
-                if change_col:
-                    return self._calc_market_stats(df, change_col=change_col, amount_col=amount_col)
+                return self._calc_market_stats(df)
         except Exception as e:
             logger.error(f"[Akshare] 新浪接口获取市场统计也失败: {e}")
 
@@ -1617,30 +1623,95 @@ class AkshareFetcher(BaseFetcher):
     def _calc_market_stats(
         self,
         df: pd.DataFrame,
-        change_col: str,
-        amount_col: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
+        ) -> Optional[Dict[str, Any]]:
         """从行情 DataFrame 计算涨跌统计。"""
-        if change_col not in df.columns:
-            return None
+        import numpy as np
 
-        df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+        df = df.copy()
+        
+        # 1. 提取基础比对数据：最新价、昨收
+        # 兼容不同接口返回的列名 sina/em efinance tushare xtdata
+        code_col = next((c for c in ['代码', '股票代码', 'ts_code','stock_code'] if c in df.columns), None)
+        name_col = next((c for c in ['名称', '股票名称','name','name'] if c in df.columns), None)
+        close_col = next((c for c in ['最新价', '最新价', 'close','lastPrice'] if c in df.columns), None)
+        pre_close_col = next((c for c in ['昨收', '昨日收盘', 'pre_close','lastClose'] if c in df.columns), None)
+        amount_col = next((c for c in ['成交额', '成交额', 'amount','amount'] if c in df.columns), None) 
+        
+        limit_up_count = 0
+        limit_down_count = 0
+        up_count = 0
+        down_count = 0
+        flat_count = 0
+
+        for code, name, current_price, pre_close, amount in zip(
+            df[code_col], df[name_col], df[close_col], df[pre_close_col], df[amount_col]
+        ):
+            
+            # 停牌过滤 efinance 的停牌数据有时候会缺失价格显示为 '-'，em 显示为none
+            if pd.isna(current_price) or pd.isna(pre_close) or current_price in ['-'] or pre_close in ['-'] or amount == 0:
+                continue
+            
+            # em、efinance 为str 需要转换为float
+            current_price = float(current_price)
+            pre_close = float(pre_close)
+            
+            # 获取去除前缀的纯数字代码
+            pure_code = normalize_stock_code(str(code)) 
+
+            # A. 确定每只股票的涨跌幅比例 (使用纯数字代码判断)
+            if is_bse_code(pure_code): 
+                ratio = 0.30
+            elif is_kc_cy_stock(pure_code): #pure_code.startswith(('688', '30')):
+                ratio = 0.20
+            elif is_st_stock(name): #'ST' in str_name:
+                ratio = 0.05
+            else:
+                ratio = 0.10
+
+            # B. 严格按照 A 股规则计算涨跌停价：昨收 * (1 ± 比例) -> 四舍五入保留2位小数
+            limit_up_price = np.floor(pre_close * (1 + ratio) * 100 + 0.5) / 100.0
+            limit_down_price = np.floor(pre_close * (1 - ratio) * 100 + 0.5) / 100.0
+
+            limit_up_price_Tolerance = round(abs(pre_close * (1 + ratio) - limit_up_price), 10)
+            limit_down_price_Tolerance = round(abs(pre_close * (1 - ratio) - limit_down_price), 10)
+
+            # C. 精确比对
+            if current_price > 0 :
+                is_limit_up = (current_price > 0) and (abs(current_price - limit_up_price) <= limit_up_price_Tolerance)
+                is_limit_down = (current_price > 0) and (abs(current_price - limit_down_price) <= limit_down_price_Tolerance)
+
+                if is_limit_up:
+                    limit_up_count += 1
+                if is_limit_down:
+                    limit_down_count += 1
+
+                if current_price > pre_close:
+                    up_count += 1
+                elif current_price < pre_close:
+                    down_count += 1
+                else:
+                    flat_count += 1
+                
+        # 统计数量
         stats = {
-            'up_count': len(df[df[change_col] > 0]),
-            'down_count': len(df[df[change_col] < 0]),
-            'flat_count': len(df[df[change_col] == 0]),
-            'limit_up_count': len(df[df[change_col] >= 9.9]),
-            'limit_down_count': len(df[df[change_col] <= -9.9]),
+            'up_count': up_count,
+            'down_count': down_count,
+            'flat_count': flat_count,
+            'limit_up_count': limit_up_count,
+            'limit_down_count': limit_down_count,
             'total_amount': 0.0,
         }
+        
+        # 成交额统计
         if amount_col and amount_col in df.columns:
             df[amount_col] = pd.to_numeric(df[amount_col], errors='coerce')
-            stats['total_amount'] = df[amount_col].sum() / 1e8
+            stats['total_amount'] = (df[amount_col].sum() / 1e8)
+            
         return stats
 
     def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
-        获取板块涨跌榜
+        获取行业板块涨跌榜
 
         数据源优先级：
         1. 东财接口 (ak.stock_board_industry_name_em)
@@ -1648,6 +1719,24 @@ class AkshareFetcher(BaseFetcher):
         """
         import akshare as ak
 
+        def _get_rank_top_n(df: pd.DataFrame, change_col: str, industry_name: str, n: int) -> Tuple[list, list]:
+            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+            df = df.dropna(subset=[change_col])
+
+            # 涨幅前n
+            top = df.nlargest(n, change_col)
+            top_sectors = [
+                {'name': row[industry_name], 'change_pct': row[change_col]}
+                for _, row in top.iterrows()
+            ]
+
+            bottom = df.nsmallest(n, change_col)
+            bottom_sectors = [
+                {'name': row[industry_name], 'change_pct': row[change_col]}
+                for _, row in bottom.iterrows()
+            ]
+            return top_sectors, bottom_sectors
+        
         # 优先东财接口
         try:
             self._set_random_user_agent()
@@ -1657,65 +1746,25 @@ class AkshareFetcher(BaseFetcher):
             df = ak.stock_board_industry_name_em()
             if df is not None and not df.empty:
                 change_col = '涨跌幅'
-                if change_col in df.columns:
-                    df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-                    df = df.dropna(subset=[change_col])
-
-                    # 涨幅前n
-                    top = df.nlargest(n, change_col)
-                    top_sectors = [
-                        {'name': row['板块名称'], 'change_pct': row[change_col]}
-                        for _, row in top.iterrows()
-                    ]
-
-                    bottom = df.nsmallest(n, change_col)
-                    bottom_sectors = [
-                        {'name': row['板块名称'], 'change_pct': row[change_col]}
-                        for _, row in bottom.iterrows()
-                    ]
-
-                    return top_sectors, bottom_sectors
+                name = '板块名称'
+                return _get_rank_top_n(df, change_col, name, n)
+            
         except Exception as e:
-            logger.warning(f"[Akshare] 东财接口获取板块排行失败: {e}，尝试新浪接口")
+            logger.warning(f"[Akshare] 东财接口获取行业板块排行失败: {e}，尝试新浪接口")
 
         # 东财失败后，尝试新浪接口
         try:
             self._set_random_user_agent()
             self._enforce_rate_limit()
 
-            logger.info("[API调用] ak.stock_sector_spot() 获取板块排行(新浪)...")
-            df = ak.stock_sector_spot(indicator='新浪行业')
+            logger.info("[API调用] ak.stock_sector_spot() 获取行业板块排行(新浪)...")
+            df = ak.stock_sector_spot(indicator='行业')
             if df is None or df.empty:
                 return None
-
-            change_col = None
-            for col in ['涨跌幅', 'change_pct', '涨幅']:
-                if col in df.columns:
-                    change_col = col
-                    break
-
-            name_col = None
-            for col in ['板块', '板块名称', 'label', 'name']:
-                if col in df.columns:
-                    name_col = col
-                    break
-
-            if not change_col or not name_col:
-                return None
-
-            df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
-            df = df.dropna(subset=[change_col])
-            top = df.nlargest(n, change_col)
-            bottom = df.nsmallest(n, change_col)
-            top_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                for _, row in top.iterrows()
-            ]
-            bottom_sectors = [
-                {'name': str(row[name_col]), 'change_pct': float(row[change_col])}
-                for _, row in bottom.iterrows()
-            ]
-            return top_sectors, bottom_sectors
+            change_col = '涨跌幅'
+            name = '板块'
+            return _get_rank_top_n(df, change_col, name, n)
+        
         except Exception as e:
             logger.error(f"[Akshare] 新浪接口获取板块排行也失败: {e}")
             return None
@@ -1785,3 +1834,48 @@ if __name__ == "__main__":
             print("[港股实时] 未获取到数据")
     except Exception as e:
         print(f"[港股实时] 获取失败: {e}")
+
+    # 测试市场统计
+    print("\n" + "=" * 50)
+    print("Testing get_market_stats (akshare)")
+    print("=" * 50)
+    try:
+        stats = fetcher.get_market_stats()
+        if stats:
+            print(f"Market Stats successfully computed:")
+            print(f"Up: {stats['up_count']} (Limit Up: {stats['limit_up_count']})")
+            print(f"Down: {stats['down_count']} (Limit Down: {stats['limit_down_count']})")
+            print(f"Flat: {stats['flat_count']}")
+            print(f"Total Amount: {stats['total_amount']:.2f} 亿 (Yi)")
+        else:
+            print("Failed to compute market stats.")
+    except Exception as e:
+        print(f"Failed to compute market stats: {e}")
+
+    # 测试筹码分布数据
+    print("\n" + "=" * 50)
+    print("测试筹码分布数据获取")
+    print("=" * 50)
+    try:
+        chip = fetcher.get_chip_distribution('600519')  # 茅台
+    except Exception as e:
+        print(f"[筹码分布] 获取失败: {e}")
+
+    # 测试行业板块排名
+    print("\n" + "=" * 50)
+    print("测试行业板块排名获取")
+    print("=" * 50)
+    try:
+        rankings = fetcher.get_sector_rankings(n=5)
+        if rankings:
+            top, bottom = rankings
+            print("涨幅榜 Top 5:")
+            for sector in top:
+                print(f"{sector['name']}: {sector['change_pct']}%")
+            print("\n跌幅榜 Top 5:")
+            for sector in bottom:
+                print(f"{sector['name']}: {sector['change_pct']}%")
+        else:
+            print("未获取到行业板块排名数据")
+    except Exception as e:
+        print(f"[行业板块排名] 获取失败: {e}")

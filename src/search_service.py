@@ -6,17 +6,19 @@ A股自选股智能分析系统 - 搜索服务模块
 
 职责：
 1. 提供统一的新闻搜索接口
-2. 支持 Tavily 和 SerpAPI 两种搜索引擎
+2. 支持 Bocha、Tavily、Brave、SerpAPI、SearXNG 多种搜索引擎
 3. 多 Key 负载均衡和故障转移
 4. 搜索结果缓存和格式化
 """
 
 import logging
 import random
+import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import List, Dict, Any, Optional, Tuple
 from itertools import cycle
 import requests
@@ -30,6 +32,11 @@ from tenacity import (
 )
 
 from data_provider.us_index_mapping import is_us_index_code
+from src.config import (
+    NEWS_STRATEGY_WINDOWS,
+    normalize_news_strategy_profile,
+    resolve_news_window_days,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +58,20 @@ _SEARCH_TRANSIENT_EXCEPTIONS = (
 def _post_with_retry(url: str, *, headers: Dict[str, str], json: Dict[str, Any], timeout: int) -> requests.Response:
     """POST with retry on transient SSL/network errors."""
     return requests.post(url, headers=headers, json=json, timeout=timeout)
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    retry=retry_if_exception_type(_SEARCH_TRANSIENT_EXCEPTIONS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+def _get_with_retry(
+    url: str, *, headers: Dict[str, str], params: Dict[str, Any], timeout: int
+) -> requests.Response:
+    """GET with retry on transient SSL/network errors."""
+    return requests.get(url, headers=headers, params=params, timeout=timeout)
 
 
 def fetch_url_content(url: str, timeout: int = 5) -> str:
@@ -1125,6 +1146,176 @@ class BraveSearchProvider(BaseSearchProvider):
             return '未知来源'
 
 
+class SearXNGSearchProvider(BaseSearchProvider):
+    """
+    SearXNG search engine (self-hosted, no quota).
+
+    Uses base_urls as "keys" for load balancing. Requires format: json in settings.yml.
+    """
+
+    def __init__(self, base_urls: List[str]):
+        super().__init__(base_urls, "SearXNG")
+
+    @staticmethod
+    def _parse_http_error(response) -> str:
+        """Parse HTTP error details for easier diagnostics."""
+        try:
+            raw_content_type = response.headers.get("content-type", "")
+            content_type = raw_content_type if isinstance(raw_content_type, str) else ""
+            if "json" in content_type:
+                error_data = response.json()
+                if isinstance(error_data, dict):
+                    message = error_data.get("error") or error_data.get("message")
+                    if message:
+                        return str(message)
+                return str(error_data)
+            raw_text = getattr(response, "text", "")
+            body = raw_text.strip() if isinstance(raw_text, str) else ""
+            return body[:200] if body else f"HTTP {response.status_code}"
+        except Exception:
+            raw_text = getattr(response, "text", "")
+            body = raw_text if isinstance(raw_text, str) else ""
+            return f"HTTP {response.status_code}: {body[:200]}"
+
+    def _do_search(  # type: ignore[override]
+        self, query: str, base_url: str, max_results: int, days: int = 7
+    ) -> SearchResponse:
+        """Execute SearXNG search."""
+        try:
+            base = base_url.rstrip("/")
+            search_url = base if base.endswith("/search") else base + "/search"
+
+            if days <= 1:
+                time_range = "day"
+            elif days <= 7:
+                time_range = "week"
+            elif days <= 30:
+                time_range = "month"
+            else:
+                time_range = "year"
+
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            }
+            params = {
+                "q": query,
+                "format": "json",
+                "time_range": time_range,
+                "pageno": 1,
+            }
+
+            response = _get_with_retry(search_url, headers=headers, params=params, timeout=10)
+
+            if response.status_code != 200:
+                error_msg = self._parse_http_error(response)
+                if response.status_code == 403:
+                    error_msg = (
+                        f"{error_msg}；SearXNG 实例可能未启用 JSON 输出（请检查 settings.yml），"
+                        "或实例/代理拒绝了本次访问"
+                    )
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_msg,
+                )
+
+            try:
+                data = response.json()
+            except Exception:
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message="响应JSON解析失败",
+                )
+
+            if not isinstance(data, dict):
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message="响应格式无效",
+                )
+
+            raw = data.get("results", [])
+            if not isinstance(raw, list):
+                raw = []
+
+            results = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                url_val = item.get("url")
+                if not url_val:
+                    continue
+                raw_published_date = item.get("publishedDate")
+
+                snippet = (item.get("content") or item.get("description") or "")[:500]
+                published_date = None
+                if raw_published_date:
+                    try:
+                        dt = datetime.fromisoformat(raw_published_date.replace("Z", "+00:00"))
+                        published_date = dt.strftime("%Y-%m-%d")
+                    except (ValueError, AttributeError):
+                        published_date = raw_published_date
+
+                results.append(
+                    SearchResult(
+                        title=item.get("title", ""),
+                        snippet=snippet,
+                        url=url_val,
+                        source=self._extract_domain(url_val),
+                        published_date=published_date,
+                    )
+                )
+                if len(results) >= max_results:
+                    break
+
+            return SearchResponse(query=query, results=results, provider=self.name, success=True)
+
+        except requests.exceptions.Timeout:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="请求超时",
+            )
+        except requests.exceptions.RequestException as e:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"网络请求失败: {e}",
+            )
+        except Exception as e:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"未知错误: {e}",
+            )
+
+    @staticmethod
+    def _extract_domain(url: str) -> str:
+        """Extract domain from URL as source label."""
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            domain = parsed.netloc.replace("www.", "")
+            return domain or "未知来源"
+        except Exception:
+            return "未知来源"
+
+
 class SearchService:
     """
     搜索服务
@@ -1154,6 +1345,9 @@ class SearchService:
         "{name} technical analysis",
         "{name} {code} performance volume",
     ]
+    NEWS_OVERSAMPLE_FACTOR = 2
+    NEWS_OVERSAMPLE_MAX = 10
+    FUTURE_TOLERANCE_DAYS = 1
     
     def __init__(
         self,
@@ -1162,7 +1356,9 @@ class SearchService:
         brave_keys: Optional[List[str]] = None,
         serpapi_keys: Optional[List[str]] = None,
         minimax_keys: Optional[List[str]] = None,
+        searxng_base_urls: Optional[List[str]] = None,
         news_max_age_days: int = 3,
+        news_strategy_profile: str = "short",
     ):
         """
         初始化搜索服务
@@ -1173,10 +1369,27 @@ class SearchService:
             brave_keys: Brave Search API Key 列表
             serpapi_keys: SerpAPI Key 列表
             minimax_keys: MiniMax API Key 列表
+            searxng_base_urls: SearXNG 实例地址列表（自建无配额兜底）
             news_max_age_days: 新闻最大时效（天）
+            news_strategy_profile: 新闻窗口策略档位（ultra_short/short/medium/long）
         """
         self._providers: List[BaseSearchProvider] = []
         self.news_max_age_days = max(1, news_max_age_days)
+        raw_profile = (news_strategy_profile or "short").strip().lower()
+        self.news_strategy_profile = normalize_news_strategy_profile(news_strategy_profile)
+        if raw_profile != self.news_strategy_profile:
+            logger.warning(
+                "NEWS_STRATEGY_PROFILE '%s' 无效，已回退为 'short'",
+                news_strategy_profile,
+            )
+        self.news_window_days = resolve_news_window_days(
+            news_max_age_days=self.news_max_age_days,
+            news_strategy_profile=self.news_strategy_profile,
+        )
+        self.news_profile_days = NEWS_STRATEGY_WINDOWS.get(
+            self.news_strategy_profile,
+            NEWS_STRATEGY_WINDOWS["short"],
+        )
 
         # 初始化搜索引擎（按优先级排序）
         # 1. Bocha 优先（中文搜索优化，AI摘要）
@@ -1203,6 +1416,11 @@ class SearchService:
         if minimax_keys:
             self._providers.append(MiniMaxSearchProvider(minimax_keys))
             logger.info(f"已配置 MiniMax 搜索，共 {len(minimax_keys)} 个 API Key")
+
+        # 6. SearXNG（自建实例，无配额兜底，最后兜底）
+        if searxng_base_urls:
+            self._providers.append(SearXNGSearchProvider(searxng_base_urls))
+            logger.info(f"已配置 SearXNG 搜索，共 {len(searxng_base_urls)} 个实例")
         
         if not self._providers:
             logger.warning("未配置任何搜索引擎 API Key，新闻搜索功能将不可用")
@@ -1211,6 +1429,13 @@ class SearchService:
         self._cache: Dict[str, Tuple[float, 'SearchResponse']] = {}
         # Default cache TTL in seconds (10 minutes)
         self._cache_ttl: int = 600
+        logger.info(
+            "新闻时效策略已启用: profile=%s, profile_days=%s, NEWS_MAX_AGE_DAYS=%s, effective_window=%s",
+            self.news_strategy_profile,
+            self.news_profile_days,
+            self.news_max_age_days,
+            self.news_window_days,
+        )
     
     @staticmethod
     def _is_foreign_stock(stock_code: str) -> bool:
@@ -1291,6 +1516,228 @@ class SearchService:
                 for k in oldest:
                     del self._cache[k]
         self._cache[key] = (time.time(), response)
+
+    def _effective_news_window_days(self) -> int:
+        """Resolve effective news window from strategy profile and global max-age."""
+        return resolve_news_window_days(
+            news_max_age_days=self.news_max_age_days,
+            news_strategy_profile=self.news_strategy_profile,
+        )
+
+    @classmethod
+    def _provider_request_size(cls, max_results: int) -> int:
+        """Apply light overfetch before time filtering to avoid sparse outputs."""
+        target = max(1, int(max_results))
+        return max(target, min(target * cls.NEWS_OVERSAMPLE_FACTOR, cls.NEWS_OVERSAMPLE_MAX))
+
+    @staticmethod
+    def _parse_relative_news_date(text: str, now: datetime) -> Optional[date]:
+        """Parse common Chinese/English relative-time strings."""
+        raw = (text or "").strip()
+        if not raw:
+            return None
+
+        lower = raw.lower()
+        if raw in {"今天", "今日", "刚刚"} or lower in {"today", "just now", "now"}:
+            return now.date()
+        if raw == "昨天" or lower == "yesterday":
+            return (now - timedelta(days=1)).date()
+        if raw == "前天":
+            return (now - timedelta(days=2)).date()
+
+        zh = re.match(r"^\s*(\d+)\s*(分钟|小时|天|周|个月|月|年)\s*前\s*$", raw)
+        if zh:
+            amount = int(zh.group(1))
+            unit = zh.group(2)
+            if unit == "分钟":
+                return (now - timedelta(minutes=amount)).date()
+            if unit == "小时":
+                return (now - timedelta(hours=amount)).date()
+            if unit == "天":
+                return (now - timedelta(days=amount)).date()
+            if unit == "周":
+                return (now - timedelta(weeks=amount)).date()
+            if unit in {"个月", "月"}:
+                return (now - timedelta(days=amount * 30)).date()
+            if unit == "年":
+                return (now - timedelta(days=amount * 365)).date()
+
+        en = re.match(
+            r"^\s*(\d+)\s*(minute|minutes|min|mins|hour|hours|day|days|week|weeks|month|months|year|years)\s*ago\s*$",
+            lower,
+        )
+        if en:
+            amount = int(en.group(1))
+            unit = en.group(2)
+            if unit in {"minute", "minutes", "min", "mins"}:
+                return (now - timedelta(minutes=amount)).date()
+            if unit in {"hour", "hours"}:
+                return (now - timedelta(hours=amount)).date()
+            if unit in {"day", "days"}:
+                return (now - timedelta(days=amount)).date()
+            if unit in {"week", "weeks"}:
+                return (now - timedelta(weeks=amount)).date()
+            if unit in {"month", "months"}:
+                return (now - timedelta(days=amount * 30)).date()
+            if unit in {"year", "years"}:
+                return (now - timedelta(days=amount * 365)).date()
+
+        return None
+
+    @classmethod
+    def _normalize_news_publish_date(cls, value: Any) -> Optional[date]:
+        """Normalize provider date value into a date object."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                local_tz = datetime.now().astimezone().tzinfo or timezone.utc
+                return value.astimezone(local_tz).date()
+            return value.date()
+        if isinstance(value, date):
+            return value
+
+        text = str(value).strip()
+        if not text:
+            return None
+        now = datetime.now()
+        local_tz = now.astimezone().tzinfo or timezone.utc
+
+        relative_date = cls._parse_relative_news_date(text, now)
+        if relative_date:
+            return relative_date
+
+        # Unix timestamp fallback
+        if text.isdigit() and len(text) in (10, 13):
+            try:
+                ts = int(text[:10]) if len(text) == 13 else int(text)
+                # Provider timestamps are typically UTC epoch seconds.
+                # Normalize to local date to keep window checks aligned with local "today".
+                return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(local_tz).date()
+            except (OSError, OverflowError, ValueError):
+                pass
+
+        iso_candidate = text.replace("Z", "+00:00")
+        try:
+            parsed_iso = datetime.fromisoformat(iso_candidate)
+            if parsed_iso.tzinfo is not None:
+                return parsed_iso.astimezone(local_tz).date()
+            return parsed_iso.date()
+        except ValueError:
+            pass
+
+        normalized = re.sub(r"(\d+)(st|nd|rd|th)", r"\1", text, flags=re.IGNORECASE)
+
+        try:
+            parsed_rfc = parsedate_to_datetime(normalized)
+            if parsed_rfc:
+                if parsed_rfc.tzinfo is not None:
+                    return parsed_rfc.astimezone(local_tz).date()
+                return parsed_rfc.date()
+        except (TypeError, ValueError):
+            pass
+
+        zh_match = re.search(r"(\d{4})\s*[年/\-.]\s*(\d{1,2})\s*[月/\-.]\s*(\d{1,2})\s*日?", text)
+        if zh_match:
+            try:
+                return date(int(zh_match.group(1)), int(zh_match.group(2)), int(zh_match.group(3)))
+            except ValueError:
+                pass
+
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d %H:%M",
+            "%Y/%m/%d",
+            "%Y.%m.%d %H:%M:%S",
+            "%Y.%m.%d %H:%M",
+            "%Y.%m.%d",
+            "%Y%m%d",
+            "%b %d, %Y",
+            "%B %d, %Y",
+            "%d %b %Y",
+            "%d %B %Y",
+            "%a, %d %b %Y %H:%M:%S %z",
+        ):
+            try:
+                parsed_dt = datetime.strptime(normalized, fmt)
+                if parsed_dt.tzinfo is not None:
+                    return parsed_dt.astimezone(local_tz).date()
+                return parsed_dt.date()
+            except ValueError:
+                continue
+
+        return None
+
+    def _filter_news_response(
+        self,
+        response: SearchResponse,
+        *,
+        search_days: int,
+        max_results: int,
+        log_scope: str,
+    ) -> SearchResponse:
+        """Hard-filter results by published_date recency and normalize date strings."""
+        if not response.success or not response.results:
+            return response
+
+        today = datetime.now().date()
+        earliest = today - timedelta(days=max(0, int(search_days) - 1))
+        latest = today + timedelta(days=self.FUTURE_TOLERANCE_DAYS)
+
+        filtered: List[SearchResult] = []
+        dropped_unknown = 0
+        dropped_old = 0
+        dropped_future = 0
+
+        for item in response.results:
+            published = self._normalize_news_publish_date(item.published_date)
+            if published is None:
+                dropped_unknown += 1
+                continue
+            if published < earliest:
+                dropped_old += 1
+                continue
+            if published > latest:
+                dropped_future += 1
+                continue
+
+            filtered.append(
+                SearchResult(
+                    title=item.title,
+                    snippet=item.snippet,
+                    url=item.url,
+                    source=item.source,
+                    published_date=published.isoformat(),
+                )
+            )
+            if len(filtered) >= max_results:
+                break
+
+        if dropped_unknown or dropped_old or dropped_future:
+            logger.info(
+                "[新闻过滤] %s: provider=%s, total=%s, kept=%s, drop_unknown=%s, drop_old=%s, drop_future=%s, window=[%s,%s]",
+                log_scope,
+                response.provider,
+                len(response.results),
+                len(filtered),
+                dropped_unknown,
+                dropped_old,
+                dropped_future,
+                earliest.isoformat(),
+                latest.isoformat(),
+            )
+
+        return SearchResponse(
+            query=response.query,
+            results=filtered,
+            provider=response.provider,
+            success=response.success,
+            error_message=response.error_message,
+            search_time=response.search_time,
+        )
     
     def search_stock_news(
         self,
@@ -1311,20 +1758,10 @@ class SearchService:
         Returns:
             SearchResponse 对象
         """
-        # 智能确定搜索时间范围
-        # 策略：
-        # 1. 周二至周五：搜索近1天（24小时）
-        # 2. 周六、周日：搜索近2-3天（覆盖周末）
-        # 3. 周一：搜索近3天（覆盖周末）
-        # 4. 用 NEWS_MAX_AGE_DAYS 限制上限
-        today_weekday = datetime.now().weekday()
-        if today_weekday == 0:  # 周一
-            weekday_days = 3
-        elif today_weekday >= 5:  # 周六(5)、周日(6)
-            weekday_days = 2
-        else:  # 周二(1) - 周五(4)
-            weekday_days = 1
-        search_days = min(weekday_days, self.news_max_age_days)
+        # 策略窗口优先：ultra_short/short/medium/long = 1/3/7/30 天，
+        # 并统一受 NEWS_MAX_AGE_DAYS 上限约束。
+        search_days = self._effective_news_window_days()
+        provider_max_results = self._provider_request_size(max_results)
 
         # 构建搜索查询（优化搜索效果）
         is_foreign = self._is_foreign_stock(stock_code)
@@ -1338,7 +1775,20 @@ class SearchService:
             # 默认主查询：股票名称 + 核心关键词
             query = f"{stock_name} {stock_code} 股票 最新消息"
 
-        logger.info(f"搜索股票新闻: {stock_name}({stock_code}), query='{query}', 时间范围: 近{search_days}天")
+        logger.info(
+            (
+                "搜索股票新闻: %s(%s), query='%s', 时间范围: 近%s天 "
+                "(profile=%s, NEWS_MAX_AGE_DAYS=%s), 目标条数=%s, provider请求条数=%s"
+            ),
+            stock_name,
+            stock_code,
+            query,
+            search_days,
+            self.news_strategy_profile,
+            self.news_max_age_days,
+            max_results,
+            provider_max_results,
+        )
 
         # Check cache first
         cache_key = self._cache_key(query, max_results, search_days)
@@ -1347,19 +1797,46 @@ class SearchService:
             logger.info(f"使用缓存搜索结果: {stock_name}({stock_code})")
             return cached
 
-        # 依次尝试各个搜索引擎
+        # 依次尝试各个搜索引擎（若过滤后为空，继续尝试下一引擎）
+        had_provider_success = False
         for provider in self._providers:
             if not provider.is_available:
                 continue
             
-            response = provider.search(query, max_results, days=search_days)
-            
-            if response.success and response.results:
+            response = provider.search(query, provider_max_results, days=search_days)
+            filtered_response = self._filter_news_response(
+                response,
+                search_days=search_days,
+                max_results=max_results,
+                log_scope=f"{stock_code}:{provider.name}:stock_news",
+            )
+            had_provider_success = had_provider_success or bool(response.success)
+
+            if filtered_response.success and filtered_response.results:
                 logger.info(f"使用 {provider.name} 搜索成功")
-                self._put_cache(cache_key, response)
-                return response
+                self._put_cache(cache_key, filtered_response)
+                return filtered_response
             else:
-                logger.warning(f"{provider.name} 搜索失败: {response.error_message}，尝试下一个引擎")
+                if response.success and not filtered_response.results:
+                    logger.info(
+                        "%s 搜索成功但过滤后无有效新闻，继续尝试下一引擎",
+                        provider.name,
+                    )
+                else:
+                    logger.warning(
+                        "%s 搜索失败: %s，尝试下一个引擎",
+                        provider.name,
+                        response.error_message,
+                    )
+
+        if had_provider_success:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider="Filtered",
+                success=True,
+                error_message=None,
+            )
         
         # 所有引擎都失败
         return SearchResponse(
@@ -1482,7 +1959,23 @@ class SearchService:
                 ), 'desc': '行业分析'},
             ]
         
-        logger.info(f"开始多维度情报搜索: {stock_name}({stock_code})")
+        search_days = self._effective_news_window_days()
+        target_per_dimension = 3
+        provider_max_results = self._provider_request_size(target_per_dimension)
+
+        logger.info(
+            (
+                "开始多维度情报搜索: %s(%s), 时间范围: 近%s天 "
+                "(profile=%s, NEWS_MAX_AGE_DAYS=%s), 目标条数=%s, provider请求条数=%s"
+            ),
+            stock_name,
+            stock_code,
+            search_days,
+            self.news_strategy_profile,
+            self.news_max_age_days,
+            target_per_dimension,
+            provider_max_results,
+        )
         
         # 轮流使用不同的搜索引擎
         provider_index = 0
@@ -1501,12 +1994,27 @@ class SearchService:
             
             logger.info(f"[情报搜索] {dim['desc']}: 使用 {provider.name}")
             
-            response = provider.search(dim['query'], max_results=3, days=self.news_max_age_days)
-            results[dim['name']] = response
+            response = provider.search(
+                dim['query'],
+                max_results=provider_max_results,
+                days=search_days,
+            )
+            filtered_response = self._filter_news_response(
+                response,
+                search_days=search_days,
+                max_results=target_per_dimension,
+                log_scope=f"{stock_code}:{provider.name}:{dim['name']}",
+            )
+            results[dim['name']] = filtered_response
             search_count += 1
             
             if response.success:
-                logger.info(f"[情报搜索] {dim['desc']}: 获取 {len(response.results)} 条结果")
+                logger.info(
+                    "[情报搜索] %s: 原始=%s条, 过滤后=%s条",
+                    dim['desc'],
+                    len(response.results),
+                    len(filtered_response.results),
+                )
             else:
                 logger.warning(f"[情报搜索] {dim['desc']}: 搜索失败 - {response.error_message}")
             
@@ -1785,7 +2293,9 @@ def get_search_service() -> SearchService:
             brave_keys=config.brave_api_keys,
             serpapi_keys=config.serpapi_keys,
             minimax_keys=config.minimax_api_keys,
+            searxng_base_urls=config.searxng_base_urls,
             news_max_age_days=config.news_max_age_days,
+            news_strategy_profile=getattr(config, "news_strategy_profile", "short"),
         )
     
     return _search_service
